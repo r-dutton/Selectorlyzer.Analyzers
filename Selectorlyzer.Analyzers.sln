@@ -17,6 +17,16 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Selectorlyzer.Qulaly", "Sel
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Selectorlyzer.Qulaly.Test", "Selectorlyzer.Analyzers\Selectorlyzer.Qulaly.Test\Selectorlyzer.Qulaly.Test.csproj", "{509D1C07-1EBC-4163-9016-6A626581EAE5}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Selectorlyzer.Analyzers/Selectorlyzer.Analyzers", "Selectorlyzer.Analyzers\Selectorlyzer.Analyzers", "{B9789D3D-542B-4BBF-8A3E-7ADF271E69D8}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Selectorlyzer.Analyzers", "Selectorlyzer.Analyzers", "{5AFBC595-261F-4F6F-8B5C-247A1E6DFC7D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Selectorlyzer.FlowBuilder", "Selectorlyzer.Analyzers\Selectorlyzer.FlowBuilder\Selectorlyzer.FlowBuilder.csproj", "{EADF151C-F134-4616-BEBA-BBD7E9227990}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Selectorlyzer.FlowBuilder.Test", "Selectorlyzer.Analyzers\Selectorlyzer.FlowBuilder.Test\Selectorlyzer.FlowBuilder.Test.csproj", "{E1328448-E1E0-4603-8E40-D0BC0C901877}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Selectorlyzer.FlowCli", "Selectorlyzer.Analyzers\Selectorlyzer.FlowCli\Selectorlyzer.FlowCli.csproj", "{F2860BD7-576E-4ED0-A820-A0140BFB3584}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -51,11 +61,29 @@ Global
 		{509D1C07-1EBC-4163-9016-6A626581EAE5}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{509D1C07-1EBC-4163-9016-6A626581EAE5}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{509D1C07-1EBC-4163-9016-6A626581EAE5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EADF151C-F134-4616-BEBA-BBD7E9227990}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EADF151C-F134-4616-BEBA-BBD7E9227990}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EADF151C-F134-4616-BEBA-BBD7E9227990}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EADF151C-F134-4616-BEBA-BBD7E9227990}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1328448-E1E0-4603-8E40-D0BC0C901877}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1328448-E1E0-4603-8E40-D0BC0C901877}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1328448-E1E0-4603-8E40-D0BC0C901877}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E1328448-E1E0-4603-8E40-D0BC0C901877}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F2860BD7-576E-4ED0-A820-A0140BFB3584}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F2860BD7-576E-4ED0-A820-A0140BFB3584}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F2860BD7-576E-4ED0-A820-A0140BFB3584}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F2860BD7-576E-4ED0-A820-A0140BFB3584}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {7B100E11-6D31-4141-B8CF-49F31E51CEBC}
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{57C219DA-720B-4BF9-B813-FBA445793960} = {B9789D3D-542B-4BBF-8A3E-7ADF271E69D8}
+		{EADF151C-F134-4616-BEBA-BBD7E9227990} = {5AFBC595-261F-4F6F-8B5C-247A1E6DFC7D}
+		{E1328448-E1E0-4603-8E40-D0BC0C901877} = {5AFBC595-261F-4F6F-8B5C-247A1E6DFC7D}
+		{F2860BD7-576E-4ED0-A820-A0140BFB3584} = {5AFBC595-261F-4F6F-8B5C-247A1E6DFC7D}
 	EndGlobalSection
 EndGlobal

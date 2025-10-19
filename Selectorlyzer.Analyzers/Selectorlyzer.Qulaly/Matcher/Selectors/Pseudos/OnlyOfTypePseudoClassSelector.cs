@@ -2,7 +2,7 @@ using System.Linq;
 
 namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
 {
-    public class LastChildPseudoClassSelector : PseudoClassSelector
+    public class OnlyOfTypePseudoClassSelector : PseudoClassSelector
     {
         public override SelectorMatcher GetMatcher()
         {
@@ -14,13 +14,15 @@ namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
                     return false;
                 }
 
-                return parent.ChildNodes().LastOrDefault() == ctx.Node;
+                var kind = ctx.Node.RawKind;
+                var count = parent.ChildNodes().Count(n => n.RawKind == kind);
+                return count == 1;
             };
         }
 
         public override string ToSelectorString()
         {
-            return ":last-child";
+            return ":only-of-type";
         }
     }
 }

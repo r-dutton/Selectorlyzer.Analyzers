@@ -6,17 +6,19 @@ namespace Selectorlyzer.Qulaly.Helpers
     {
         public static bool IndexMatchesOffsetAndStep(int index, int offset, int step)
         {
+            var oneBasedIndex = index + 1;
+
             if (step == 0)
             {
-                return index == offset;
+                return oneBasedIndex == offset;
             }
 
-            if (index < offset)
+            if (oneBasedIndex < offset)
             {
                 return false;
             }
 
-            return (index - offset) % step == 0;
+            return (oneBasedIndex - offset) % step == 0;
         }
 
         public static (int, int) GetOffsetAndStep(string expression)

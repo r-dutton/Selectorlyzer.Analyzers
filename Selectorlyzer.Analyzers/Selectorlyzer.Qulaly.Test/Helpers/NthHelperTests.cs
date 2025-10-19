@@ -26,19 +26,19 @@ namespace Selectorlyzer.Qulaly.Test.Helpers
         }
 
         [Theory]
-        [InlineData(0, 0, 2)]
-        [InlineData(2, 0, 2)]
-        [InlineData(4, 0, 2)]
-        [InlineData(1, 1, 2)]
-        [InlineData(3, 1, 2)]
-        [InlineData(5, 1, 2)]
-        [InlineData(7, 7, 0)]
+        [InlineData(1, 0, 2)]
+        [InlineData(3, 0, 2)]
+        [InlineData(5, 0, 2)]
+        [InlineData(0, 1, 2)]
+        [InlineData(2, 1, 2)]
+        [InlineData(4, 1, 2)]
+        [InlineData(6, 7, 0)]
+        [InlineData(0, 0, 1)]
         [InlineData(1, 0, 1)]
         [InlineData(2, 0, 1)]
-        [InlineData(3, 0, 1)]
+        [InlineData(0, 1, 1)]
+        [InlineData(1, 1, 1)]
         [InlineData(2, 1, 1)]
-        [InlineData(3, 1, 1)]
-        [InlineData(4, 1, 1)]
         public void Should_Match_Valid_Index_To_Offset_And_Step(int index, int offset, int step)
         {
             var result = NthHelper.IndexMatchesOffsetAndStep(index, offset, step);
@@ -46,14 +46,14 @@ namespace Selectorlyzer.Qulaly.Test.Helpers
         }
 
         [Theory]
-        [InlineData(1, 0, 2)]
-        [InlineData(3, 0, 2)]
-        [InlineData(5, 0, 2)]
-        [InlineData(0, 1, 2)]
-        [InlineData(2, 1, 2)]
-        [InlineData(4, 1, 2)]
-        [InlineData(1, 7, 0)]
-        [InlineData(0, 1, 1)]
+        [InlineData(0, 0, 2)]
+        [InlineData(2, 0, 2)]
+        [InlineData(4, 0, 2)]
+        [InlineData(1, 1, 2)]
+        [InlineData(3, 1, 2)]
+        [InlineData(5, 1, 2)]
+        [InlineData(0, 7, 0)]
+        [InlineData(5, 7, 0)]
         public void Should_Not_Match_Invalid_Index_To_Offset_And_Step(int index, int offset, int step)
         {
             var result = NthHelper.IndexMatchesOffsetAndStep(index, offset, step);

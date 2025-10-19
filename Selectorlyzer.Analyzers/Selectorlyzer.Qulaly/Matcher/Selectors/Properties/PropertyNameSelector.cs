@@ -1,4 +1,4 @@
-﻿namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
+namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
 {
     public class PropertyNameSelector : PropertySelector
     {
@@ -9,11 +9,7 @@
 
         public override SelectorMatcher GetMatcher()
         {
-            return (in SelectorMatcherContext ctx) =>
-            {
-                var prop = ctx.Node.GetType().GetProperty(PropertyName);
-                return prop != null;
-            };
+            return (in SelectorMatcherContext ctx) => TryResolveProperty(ctx, out _);
         }
 
         public override string ToSelectorString()

@@ -1,6 +1,6 @@
-﻿using System;
+using System;
 using System.Linq;
-using Microsoft.CodeAnalysis;
+using Selectorlyzer.Qulaly.Matcher;
 
 namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
 {
@@ -28,7 +28,7 @@ namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
 
             return (in SelectorMatcherContext ctx) =>
             {
-                return ctx.Node.QuerySelector(query) != null;
+                return EnumerableMatcher.GetEnumerable(query, ctx).Any();
             };
         }
 

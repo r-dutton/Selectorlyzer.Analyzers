@@ -1,4 +1,4 @@
-﻿using System.Linq;
+using System.Linq;
 
 namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
 {
@@ -6,7 +6,16 @@ namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
     {
         public override SelectorMatcher GetMatcher()
         {
-            return (in SelectorMatcherContext ctx) => ctx.Node == ctx.Node.Parent!.ChildNodes().First();
+            return (in SelectorMatcherContext ctx) =>
+            {
+                var parent = ctx.Node.Parent;
+                if (parent == null)
+                {
+                    return false;
+                }
+
+                return parent.ChildNodes().FirstOrDefault() == ctx.Node;
+            };
         }
 
         public override string ToSelectorString()

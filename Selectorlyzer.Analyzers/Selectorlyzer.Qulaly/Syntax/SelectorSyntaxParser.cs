@@ -46,6 +46,11 @@ namespace Selectorlyzer.Qulaly.Syntax
                 ProductionKind.HasPseudoClassSelector => VisitHasPseudoClassSelector(production),
                 ProductionKind.ImplementsPseudoClassSelector => VisitImplementsPseudoClassSelector(production),
                 ProductionKind.NthChildPseudoClassSelector => VisitNthChildPseudoClassSelector(production),
+                ProductionKind.NthLastChildPseudoClassSelector => VisitNthLastChildPseudoClassSelector(production),
+                ProductionKind.NthOfTypePseudoClassSelector => VisitNthOfTypePseudoClassSelector(production),
+                ProductionKind.NthLastOfTypePseudoClassSelector => VisitNthLastOfTypePseudoClassSelector(production),
+                ProductionKind.WherePseudoClassSelector => VisitWherePseudoClassSelector(production),
+                ProductionKind.CapturePseudoClassSelector => VisitCapturePseudoClassSelector(production),
                 ProductionKind.NotPseudoClassSelector => VisitNotPseudoClassSelector(production),
                 ProductionKind.AttributeSelector => VisitAttributeSelector(production),
                 ProductionKind.AttributeSelectorQulalyExtensionNumber => VisitAttributeQulalyExtensionNumberSelector(production),
@@ -74,6 +79,36 @@ namespace Selectorlyzer.Qulaly.Syntax
         {
             var selectorList = string.Join(string.Empty, production.Children[0].Captures);
             return new NthChildPseudoClassSelector(selectorList);
+        }
+        private SelectorElement VisitNthLastChildPseudoClassSelector(Production production)
+        {
+            var expression = string.Join(string.Empty, production.Children[0].Captures);
+            return new NthLastChildPseudoClassSelector(expression);
+        }
+
+        private SelectorElement VisitNthOfTypePseudoClassSelector(Production production)
+        {
+            var expression = string.Join(string.Empty, production.Children[0].Captures);
+            return new NthOfTypePseudoClassSelector(expression);
+        }
+
+        private SelectorElement VisitNthLastOfTypePseudoClassSelector(Production production)
+        {
+            var expression = string.Join(string.Empty, production.Children[0].Captures);
+            return new NthLastOfTypePseudoClassSelector(expression);
+        }
+
+        private SelectorElement VisitWherePseudoClassSelector(Production production)
+        {
+            var selectorList = production.Children[0]/* PseudoClassSelectorValue */.Children[0]/* ComplexSelectorList */;
+            return new WherePseudoClassSelector(selectorList.Children.Select(x => Visit(x)).Cast<Selector>().ToArray());
+        }
+
+        private SelectorElement VisitCapturePseudoClassSelector(Production production)
+        {
+            var alias = production.Captures.Count > 0 ? production.Captures[0] : string.Empty;
+            var property = production.Captures.Count > 1 ? production.Captures[1] : null;
+            return new CapturePseudoClassSelector(alias, property);
         }
         private SelectorElement VisitNotPseudoClassSelector(Production production)
         {
@@ -133,6 +168,11 @@ namespace Selectorlyzer.Qulaly.Syntax
                     "lambda" => new LambdaPseudoClassSelector(),
                     "first-child" => new FirstChildPseudoClassSelector(),
                     "last-child" => new LastChildPseudoClassSelector(),
+                    "only-child" => new OnlyChildPseudoClassSelector(),
+                    "only-of-type" => new OnlyOfTypePseudoClassSelector(),
+                    "empty" => new EmptyPseudoClassSelector(),
+                    "root" => new RootPseudoClassSelector(),
+                    "scope" => new ScopePseudoClassSelector(),
                     _ => throw new QulalyParseException($"Unknown Pseudo-class: {pseudoName}", production),
                 };
             }
@@ -144,23 +184,38 @@ namespace Selectorlyzer.Qulaly.Syntax
 
         private SelectorElement VisitAttributeSelector(Production production)
         {
-            var name = production.Children[0].Captures[0]; // wq-name
+            var name = string.Concat(production.Children[0].Captures);
             if (production.Captures.Any())
             {
-                var matcher = production.Captures[0];
-                var value = production.Captures[1];
-                if (value.StartsWith("'") || value.EndsWith("\""))
+                var captures = production.Captures;
+                var matcher = captures[0];
+                var value = captures.Count > 1 ? captures[1] : string.Empty;
+                if ((value.StartsWith("'") && value.EndsWith("'")) || (value.StartsWith("\"") && value.EndsWith("\"")))
                 {
                     value = value.Substring(1, value.Length - 2);
                 }
 
+                var modifiers = captures.Skip(2).Select(m => m.Trim()).ToArray();
+                var caseInsensitive = modifiers.Any(m => string.Equals(m, "i", StringComparison.OrdinalIgnoreCase));
+                if (modifiers.Any(m => string.Equals(m, "s", StringComparison.OrdinalIgnoreCase)))
+                {
+                    caseInsensitive = false;
+                }
+
+                var negate = matcher.StartsWith("!");
+                if (negate)
+                {
+                    matcher = matcher.Substring(1);
+                }
+
                 return matcher switch
                 {
-                    "=" => new PropertyExactMatchSelector(name, value),
-                    "*=" => new PropertySubstringMatchSelector(name, value),
-                    "^=" => new PropertyPrefixMatchSelector(name, value),
-                    "$=" => new PropertySuffixMatchSelector(name, value),
-                    "~=" => new PropertyItemContainsMatchSelector(name, value),
+                    "=" => new PropertyExactMatchSelector(name, value, caseInsensitive, negate),
+                    "*=" => new PropertySubstringMatchSelector(name, value, caseInsensitive, negate),
+                    "^=" => new PropertyPrefixMatchSelector(name, value, caseInsensitive, negate),
+                    "$=" => new PropertySuffixMatchSelector(name, value, caseInsensitive, negate),
+                    "~=" => new PropertyItemContainsMatchSelector(name, value, caseInsensitive, negate),
+                    "|=" => new PropertyDashMatchSelector(name, value, caseInsensitive, negate),
                     _ => throw new QulalyParseException($"Unknown Matcher: {matcher}", production)
                 };
             }
@@ -172,7 +227,7 @@ namespace Selectorlyzer.Qulaly.Syntax
 
         private SelectorElement VisitAttributeQulalyExtensionNumberSelector(Production production)
         {
-            var name = production.Children[0].Captures[0]; // wq-name
+            var name = string.Concat(production.Children[0].Captures);
             if (production.Captures.Any())
             {
                 var matcher = production.Captures[0];

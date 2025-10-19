@@ -1,20 +1,18 @@
-﻿namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
+namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
 {
-    public class PropertyEqualMatchSelector : PropertySelector
+    public class PropertyEqualMatchSelector : PropertyCountSelector
     {
-        public int Value { get; }
-
         public PropertyEqualMatchSelector(string propertyName, int value)
-            : base(propertyName)
+            : base(propertyName, value)
         {
-            Value = value;
         }
 
         public override SelectorMatcher GetMatcher()
         {
             return (in SelectorMatcherContext ctx) =>
             {
-                return int.TryParse(GetPropertyValue(ctx), out var value) && value == Value;
+                var value = GetPropertyNumberValue(ctx);
+                return value != null && value == Value;
             };
         }
 

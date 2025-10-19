@@ -91,9 +91,7 @@ namespace Qulaly.Syntax
         {
             // <pseudo-class-selector> = ':' <ident-token> |
             //                           ':' <function-token> <any-value> ')' |
-            //                           ':' <not-pseudo-class-selector>
-            //                           ':' <is-pseudo-class-selector>
-            //                           ':' <has-pseudo-class-selector>
+            //                           ':' <not-pseudo-class-selector>'
             return Production(ProductionKind.PseudoClassSelector, () =>
             {
                 return Expect(
@@ -101,6 +99,11 @@ namespace Qulaly.Syntax
                     () => Expect(Char(':')) && Expect(HasPseudoClassSelector),
                     () => Expect(Char(':')) && Expect(ImplementsPseudoClassSelector),
                     () => Expect(Char(':')) && Expect(NthChildPseudoClassSelector),
+                    () => Expect(Char(':')) && Expect(NthLastChildPseudoClassSelector),
+                    () => Expect(Char(':')) && Expect(NthOfTypePseudoClassSelector),
+                    () => Expect(Char(':')) && Expect(NthLastOfTypePseudoClassSelector),
+                    () => Expect(Char(':')) && Expect(WherePseudoClassSelector),
+                    () => Expect(Char(':')) && Expect(CapturePseudoClassSelector),
                     () => Expect(Char(':')) && Expect(NotPseudoClassSelector),
                     () => Expect(Char(':')) && Expect(NotPseudoClassSelector),
                     () => Expect(Char(':')) && Expect(FunctionToken) && Expect(Expression) && Expect(Char(')')),
@@ -124,6 +127,47 @@ namespace Qulaly.Syntax
             });
         }
 
+        public bool NthLastChildPseudoClassSelector()
+        {
+            return Production(ProductionKind.NthLastChildPseudoClassSelector, () =>
+            {
+                return Expect(Chars("nth-last-child"))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char('('))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Nth)
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char(')'));
+            });
+        }
+
+        public bool NthOfTypePseudoClassSelector()
+        {
+            return Production(ProductionKind.NthOfTypePseudoClassSelector, () =>
+            {
+                return Expect(Chars("nth-of-type"))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char('('))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Nth)
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char(')'));
+            });
+        }
+
+        public bool NthLastOfTypePseudoClassSelector()
+        {
+            return Production(ProductionKind.NthLastOfTypePseudoClassSelector, () =>
+            {
+                return Expect(Chars("nth-last-of-type"))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char('('))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Nth)
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char(')'));
+            });
+        }
         public bool ImplementsPseudoClassSelector()
         {
             // <not-pseudo-class-selector> = 'not' '(' <not-pseudo-class-selector-value> ')'
@@ -182,6 +226,39 @@ namespace Qulaly.Syntax
             return Production(ProductionKind.IsPseudoClassSelectorValue, () =>
             {
                 return Expect(ComplexSelectorList);
+            });
+        }
+
+        public bool WherePseudoClassSelector()
+        {
+            return Production(ProductionKind.WherePseudoClassSelector, () =>
+            {
+                return Expect(Chars("where"))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char('('))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(IsPseudoClassSelectorValue)
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char(')'));
+            });
+        }
+
+        public bool CapturePseudoClassSelector()
+        {
+            return Production(ProductionKind.CapturePseudoClassSelector, () =>
+            {
+                return Expect(Chars("capture"))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char('('))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Capture(IdentToken))
+                       && ExpectZeroOrMore(Space)
+                       && ExpectZeroOrOne(() =>
+                           Expect(Char(','))
+                           && ExpectZeroOrMore(Space)
+                           && Expect(Capture(PropertyNameChainQulalyExtension)))
+                       && ExpectZeroOrMore(Space)
+                       && Expect(Char(')'));
             });
         }
 
@@ -264,16 +341,21 @@ namespace Qulaly.Syntax
             //                        '[' <wq-name> <attr-matcher> [ <string-token> | <ident-token> ] <attr-modifier>? ']'
             return Production(ProductionKind.AttributeSelector, () =>
             {
-                return Expect(() => Expect(Char('[')) && ExpectZeroOrMore(Space) && Expect(WqName) && ExpectZeroOrMore(Space) && Expect(Char(']')),
+                return Expect(
                     () => Expect(Char('['))
                           && ExpectZeroOrMore(Space)
-                          && Expect(WqName)
+                          && Expect(PropertyNameChainQulalyExtension)
+                          && ExpectZeroOrMore(Space)
+                          && Expect(Char(']')),
+                    () => Expect(Char('['))
+                          && ExpectZeroOrMore(Space)
+                          && Expect(PropertyNameChainQulalyExtension)
                           && ExpectZeroOrMore(Space)
                           && Expect(() =>
                               Capture(AttrMatcher)()
                               && ExpectZeroOrMore(Space)
                               && Expect(Capture(() => Expect(IdentToken, String)))
-                              && ExpectZeroOrMore(() => ExpectZeroOrMore(Space) && Expect(Capture(() => Expect(Char('i'))))) // attr-modifier
+                              && ExpectZeroOrMore(() => ExpectZeroOrMore(Space) && Expect(Capture(() => Expect(Char('i'), Char('I'), Char('s'), Char('S'))))) // attr-modifier
                               && ExpectZeroOrMore(Space)
                           )
                           && Expect(Char(']'))
@@ -303,8 +385,13 @@ namespace Qulaly.Syntax
 
         public bool AttrMatcher()
         {
-            // <attr-matcher> = [ '~' | '|' | '^' | '$' | '*' ]? '='
-            return Expect(() => ExpectZeroOrOne(() => Expect(Char('~'), Char('|'), Char('^'), Char('$'), Char('*'))) && Expect(Char('=')));
+            // <attr-matcher> = [ '!' ]? [ '~' | '|' | '^' | '$' | '*' ]? '='
+            return Expect(() =>
+            {
+                ExpectZeroOrOne(() => Expect(Char('!')));
+                ExpectZeroOrOne(() => Expect(Char('~'), Char('|'), Char('^'), Char('$'), Char('*')));
+                return Expect(Char('='));
+            });
         }
         public bool AttrMatcherQulalyExtension()
         {
@@ -324,9 +411,23 @@ namespace Qulaly.Syntax
         {
             return Production(ProductionKind.PropertyNameChainQulalyExtension, () =>
             {
-                // <ident-token> [ '.' <ident-token> ]*
-                return Expect(Capture(() => Expect(IdentToken) && ExpectZeroOrMore(() => Expect(Char('.')) && Expect(IdentToken))));
+                // <ident-token> [ '()'? '.' <ident-token> '()'? ]*
+                return Expect(
+                    Capture(() =>
+                    {
+                        if (!Expect(PropertyNameSegment))
+                        {
+                            return false;
+                        }
+
+                        return ExpectZeroOrMore(() => Expect(Char('.')) && Expect(PropertyNameSegment));
+                    }));
             });
+        }
+
+        private bool PropertyNameSegment()
+        {
+            return Expect(() => Expect(IdentToken) && ExpectZeroOrOne(() => Expect(Char('(')) && Expect(Char(')'))));
         }
 
         public bool Expression()

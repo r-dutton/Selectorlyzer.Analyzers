@@ -1,26 +1,22 @@
-﻿namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
+namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
 {
-    public class PropertyPrefixMatchSelector : PropertySelector
+    public class PropertyPrefixMatchSelector : PropertyStringMatchSelector
     {
-        public string Value { get; }
-
-        public PropertyPrefixMatchSelector(string propertyName, string value)
-            : base(propertyName)
+        public PropertyPrefixMatchSelector(string propertyName, string value, bool caseInsensitive = false, bool negate = false)
+            : base(propertyName, value, caseInsensitive, negate)
         {
-            Value = value;
         }
 
         public override SelectorMatcher GetMatcher()
         {
-            return (in SelectorMatcherContext ctx) =>
-            {
-                return GetPropertyValue(ctx)?.StartsWith(Value) ?? false;
-            };
+            return (in SelectorMatcherContext ctx) => Evaluate(ctx, candidate => candidate.StartsWith(Value, Comparison));
         }
 
         public override string ToSelectorString()
         {
-            return $"[{PropertyName}^='{Value}']";
+            var negation = Negate ? "!" : string.Empty;
+            var modifier = CaseInsensitive ? " i" : string.Empty;
+            return $"[{PropertyName}{negation}^='{Value}'{modifier}]";
         }
     }
 }
