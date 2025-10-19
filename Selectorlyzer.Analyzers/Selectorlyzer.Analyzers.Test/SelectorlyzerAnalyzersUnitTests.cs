@@ -1,5 +1,11 @@
 ﻿using FluentAssertions;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Selectorlyzer.Qulaly;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using VerifyCS = Selectorlyzer.Analyzers.Test.CSharpAnalyzerVerifier<
     Selectorlyzer.Analyzers.SelectorlyzerDiagnosticAnalyzer>;
@@ -149,6 +155,58 @@ class InvalidClassName: BaseClass, IValidClassName {}";
         {
             var result = SelectorlyzerDiagnosticAnalyzer.Analyzer.GetDiagnosticDescriptor(severity);
             result.Id.Should().Be(expectedId);
+        }
+
+        [Fact]
+        public void Analyzer_precompiles_selector_when_rule_has_no_placeholders()
+        {
+            var analyzer = new SelectorlyzerDiagnosticAnalyzer.Analyzer(
+                QulalySelector.Parse(":class"),
+                ":method[Name='SomeMethod']",
+                "Message",
+                "warning");
+
+            var ruleSelectorField = typeof(SelectorlyzerDiagnosticAnalyzer.Analyzer).GetField(
+                "ruleSelector",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+
+            var placeholderSelectorField = typeof(SelectorlyzerDiagnosticAnalyzer.Analyzer).GetField(
+                "placeholderRuleSelectors",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+
+            var ruleSelector = (QulalySelector?)ruleSelectorField?.GetValue(analyzer);
+            var placeholderSelectors = (ConcurrentDictionary<string, QulalySelector>?)placeholderSelectorField?.GetValue(analyzer);
+
+            ruleSelector.Should().NotBeNull();
+            placeholderSelectors.Should().BeNull();
+        }
+
+        [Fact]
+        public void CheckRule_caches_placeholder_selectors()
+        {
+            var source = @"class SampleClass {}";
+            var syntaxTree = CSharpSyntaxTree.ParseText(source);
+            var node = syntaxTree.GetRoot().DescendantNodes().OfType<ClassDeclarationSyntax>().Single();
+
+            var analyzer = new SelectorlyzerDiagnosticAnalyzer.Analyzer(
+                QulalySelector.Parse(":class"),
+                ":implements([Name='I{Name}'])",
+                "Message",
+                "warning");
+
+            analyzer.CheckRule(node).Should().BeFalse();
+
+            var placeholderSelectorField = typeof(SelectorlyzerDiagnosticAnalyzer.Analyzer).GetField(
+                "placeholderRuleSelectors",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+
+            var placeholderSelectors = (ConcurrentDictionary<string, QulalySelector>?)placeholderSelectorField?.GetValue(analyzer);
+
+            placeholderSelectors.Should().NotBeNull();
+            placeholderSelectors!.Count.Should().Be(1);
+
+            analyzer.CheckRule(node).Should().BeFalse();
+            placeholderSelectors.Count.Should().Be(1);
         }
     }
 }

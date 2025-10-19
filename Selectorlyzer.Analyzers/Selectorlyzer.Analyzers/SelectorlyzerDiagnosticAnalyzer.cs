@@ -4,6 +4,7 @@ using Microsoft.CodeAnalysis.Diagnostics;
 using Selectorlyzer.Qulaly;
 using Selectorlyzer.Qulaly.Matcher.Selectors;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -83,6 +84,8 @@ public class SelectorlyzerDiagnosticAnalyzer : DiagnosticAnalyzer
     {
         private readonly QulalySelector selector;
         private readonly string? rule;
+        private readonly QulalySelector? ruleSelector;
+        private readonly ConcurrentDictionary<string, QulalySelector>? placeholderRuleSelectors;
         private readonly string message;
         private readonly string severity;
 
@@ -92,13 +95,27 @@ public class SelectorlyzerDiagnosticAnalyzer : DiagnosticAnalyzer
             this.rule = rule;
             this.message = message;
             this.severity = severity;
+
+            if (rule is null)
+            {
+                return;
+            }
+
+            if (rule.Contains('{'))
+            {
+                placeholderRuleSelectors = new ConcurrentDictionary<string, QulalySelector>(StringComparer.Ordinal);
+            }
+            else
+            {
+                ruleSelector = QulalySelector.Parse(rule);
+            }
         }
 
         public void SyntaxTreeAnalysisRule(SyntaxTreeAnalysisContext context)
         {
             foreach (var node in context.Tree.QuerySelectorAll(selector))
             {
-                if (CheckRule(rule, node))
+                if (CheckRule(node))
                 {
                     continue;
                 }
@@ -119,7 +136,7 @@ public class SelectorlyzerDiagnosticAnalyzer : DiagnosticAnalyzer
                 return;
             }
 
-            if (CheckRule(rule, node))
+            if (CheckRule(node))
             {
                 return;
             }
@@ -128,16 +145,28 @@ public class SelectorlyzerDiagnosticAnalyzer : DiagnosticAnalyzer
             context.ReportDiagnostic(diagnostic);
         }
 
-        internal static bool CheckRule(string? rule, SyntaxNode node)
+        internal bool CheckRule(SyntaxNode node)
         {
             if (rule is null)
             {
                 return false;
             }
 
-            var selector = ReplacePlaceholders(node, rule);
+            if (ruleSelector is not null)
+            {
+                return node.QuerySelector(ruleSelector) is not null;
+            }
 
-            return node.QuerySelector(selector) is not null;
+            var selectorText = ReplacePlaceholders(node, rule);
+
+            if (placeholderRuleSelectors is null)
+            {
+                var parsedSelector = QulalySelector.Parse(selectorText);
+                return node.QuerySelector(parsedSelector) is not null;
+            }
+
+            var cachedSelector = placeholderRuleSelectors.GetOrAdd(selectorText, static text => QulalySelector.Parse(text));
+            return node.QuerySelector(cachedSelector) is not null;
         }
 
         internal static DiagnosticDescriptor GetDiagnosticDescriptor(string severity)
