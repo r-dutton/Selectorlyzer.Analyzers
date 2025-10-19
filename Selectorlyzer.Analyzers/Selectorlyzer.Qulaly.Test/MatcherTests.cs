@@ -203,6 +203,61 @@ namespace ConsoleApp22
         }
 
         [Fact]
+        public void QueryExtensions_AddMissingSyntaxTreeToCompilation()
+        {
+            var missingTree = CSharpSyntaxTree.ParseText(@"using System;
+
+public sealed class Target
+{
+    public void Execute()
+    {
+        Console.WriteLine(""Hello"");
+    }
+}
+");
+
+            var otherTree = CSharpSyntaxTree.ParseText("public sealed class Other { }");
+
+            var compilation = CSharpCompilation.Create("Test")
+                .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
+                .AddSyntaxTrees(otherTree);
+
+            var root = missingTree.GetCompilationUnitRoot();
+
+            var methodNames = root.QuerySelectorAll(":method", compilation)
+                .OfType<MethodDeclarationSyntax>()
+                .Select(method => method.Identifier.Text)
+                .ToArray();
+
+            methodNames.Should().ContainSingle().Which.Should().Be("Execute");
+
+            var classMatch = root.QueryMatches(":class", compilation).Single();
+            classMatch.Node.Should().BeOfType<ClassDeclarationSyntax>();
+            classMatch.Symbol.Should().NotBeNull();
+            classMatch.Symbol!.Name.Should().Be("Target");
+
+            root.QuerySelector(":method", compilation)
+                .Should()
+                .BeOfType<MethodDeclarationSyntax>()
+                .Which.Identifier.Text.Should().Be("Execute");
+
+            var contextOnly = new SelectorQueryContext(compilation);
+            root.QuerySelectorAll(":method", queryContext: contextOnly)
+                .OfType<MethodDeclarationSyntax>()
+                .Select(method => method.Identifier.Text)
+                .Should()
+                .ContainSingle()
+                .And
+                .Contain("Execute");
+
+            root.QueryMatches(":class", queryContext: contextOnly)
+                .Single()
+                .Symbol
+                .Should()
+                .NotBeNull();
+        }
+
+        [Fact]
         public void PropertySelector_Invokes_Symbol_Methods_And_Projects_Collections()
         {
             var selector = QulalySelector.Parse(":class[Symbol.GetAttributes().AttributeClass.Name~='AuthorizeAttribute']");
