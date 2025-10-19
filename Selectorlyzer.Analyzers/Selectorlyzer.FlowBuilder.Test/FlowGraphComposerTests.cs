@@ -128,5 +128,13 @@ public sealed class HttpGetAttribute : Attribute
 
         var callNode = combined.Nodes.Should().ContainSingle(n => n.Type == "infra.http_call").Subject;
         combined.Edges.Should().Contain(e => e.To == callNode.Id && e.Kind == "flow");
+
+        var composition = composer.CreateComposition();
+        composition.AddGraph(graphA);
+        composition.AddGraph(graphB);
+        var streamed = composition.Build();
+
+        streamed.Nodes.Should().BeEquivalentTo(combined.Nodes);
+        streamed.Edges.Should().BeEquivalentTo(combined.Edges);
     }
 }
