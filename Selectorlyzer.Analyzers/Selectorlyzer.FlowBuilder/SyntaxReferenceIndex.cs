@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -12,26 +13,25 @@ namespace Selectorlyzer.FlowBuilder
     {
         private readonly Dictionary<SyntaxTree, TreeIndex> _indices = new();
 
-        public void IndexTree(SyntaxTree syntaxTree, SemanticModel semanticModel)
+        public void IndexTree(SyntaxTree syntaxTree, Func<SemanticModel> semanticModelFactory)
         {
             if (syntaxTree is null)
             {
                 throw new ArgumentNullException(nameof(syntaxTree));
             }
 
-            if (semanticModel is null)
+            if (semanticModelFactory is null)
             {
-                throw new ArgumentNullException(nameof(semanticModel));
+                throw new ArgumentNullException(nameof(semanticModelFactory));
             }
 
-            if (_indices.ContainsKey(syntaxTree))
+            if (_indices.TryGetValue(syntaxTree, out var existing))
             {
+                existing.UpdateSemanticModelFactory(semanticModelFactory);
                 return;
             }
 
-            var builder = new TreeIndexBuilder(semanticModel);
-            builder.Visit(syntaxTree.GetRoot());
-            _indices[syntaxTree] = new TreeIndex(builder.Complete());
+            _indices[syntaxTree] = new TreeIndex(syntaxTree, semanticModelFactory);
         }
 
         public IReadOnlyList<ISymbol> GetSymbols(SyntaxNode? node)
@@ -53,132 +53,129 @@ namespace Selectorlyzer.FlowBuilder
         {
             _indices.Clear();
         }
-
         private sealed class TreeIndex
         {
-            private readonly Dictionary<SyntaxNode, ImmutableArray<ISymbol>> _symbols;
+            private readonly SyntaxTree _syntaxTree;
+            private readonly ConditionalWeakTable<SyntaxNode, SymbolList> _cache = new();
+            private Func<SemanticModel> _semanticModelFactory;
+            private WeakReference<SemanticModel>? _semanticModel;
 
-            public TreeIndex(Dictionary<SyntaxNode, ImmutableArray<ISymbol>> symbols)
+            public TreeIndex(SyntaxTree syntaxTree, Func<SemanticModel> semanticModelFactory)
             {
-                _symbols = symbols;
+                _syntaxTree = syntaxTree;
+                _semanticModelFactory = semanticModelFactory;
+            }
+
+            public void UpdateSemanticModelFactory(Func<SemanticModel> semanticModelFactory)
+            {
+                _semanticModelFactory = semanticModelFactory ?? throw new ArgumentNullException(nameof(semanticModelFactory));
             }
 
             public IReadOnlyList<ISymbol> GetSymbols(SyntaxNode node)
             {
-                return _symbols.TryGetValue(node, out var symbols)
-                    ? symbols
-                    : ImmutableArray<ISymbol>.Empty;
-            }
-        }
-
-        private sealed class TreeIndexBuilder : CSharpSyntaxWalker
-        {
-            private readonly SemanticModel _semanticModel;
-            private readonly Stack<List<ISymbol>> _symbolStack = new();
-            private readonly Dictionary<SyntaxNode, ImmutableArray<ISymbol>> _symbolsByNode = new(ReferenceEqualityComparer.Instance);
-            private readonly Dictionary<SyntaxNode, ImmutableArray<ISymbol>> _boundSymbols = new(ReferenceEqualityComparer.Instance);
-
-            public TreeIndexBuilder(SemanticModel semanticModel)
-                : base(SyntaxWalkerDepth.StructuredTrivia)
-            {
-                _semanticModel = semanticModel ?? throw new ArgumentNullException(nameof(semanticModel));
-            }
-
-            public Dictionary<SyntaxNode, ImmutableArray<ISymbol>> Complete() => _symbolsByNode;
-
-            public override void Visit(SyntaxNode? node)
-            {
-                if (node is null)
+                if (!ReferenceEquals(node.SyntaxTree, _syntaxTree))
                 {
-                    return;
+                    return ImmutableArray<ISymbol>.Empty;
                 }
 
-                var collected = new List<ISymbol>();
-                _symbolStack.Push(collected);
+                var semanticModel = GetSemanticModel();
+                var holder = _cache.GetValue(
+                    node,
+                    static (n, state) => new SymbolList(SymbolCollector.Collect(state.SemanticModel, n)),
+                    new CollectorState(semanticModel));
 
-                base.Visit(node);
-
-                _symbolStack.Pop();
-
-                if (collected.Count == 0)
-                {
-                    return;
-                }
-
-                _symbolsByNode[node] = collected.ToImmutableArray();
-
-                if (_symbolStack.Count > 0)
-                {
-                    _symbolStack.Peek().AddRange(collected);
-                }
+                return holder.Symbols;
             }
 
-            public override void VisitInvocationExpression(InvocationExpressionSyntax node)
+            private SemanticModel GetSemanticModel()
             {
-                base.VisitInvocationExpression(node);
-                CollectSymbolsFromNode(node);
-            }
-
-            public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
-            {
-                base.VisitObjectCreationExpression(node);
-                CollectSymbolsFromNode(node);
-            }
-
-            public override void VisitImplicitObjectCreationExpression(ImplicitObjectCreationExpressionSyntax node)
-            {
-                base.VisitImplicitObjectCreationExpression(node);
-                CollectSymbolsFromNode(node);
-            }
-
-            public override void VisitAttribute(AttributeSyntax node)
-            {
-                base.VisitAttribute(node);
-                CollectSymbolsFromNode(node);
-            }
-
-            private void CollectSymbolsFromNode(SyntaxNode node)
-            {
-                if (_symbolStack.Count == 0)
-                {
-                    return;
-                }
-
-                var symbols = GetOrComputeBoundSymbols(node);
-                if (symbols.IsDefaultOrEmpty)
-                {
-                    return;
-                }
-
-                _symbolStack.Peek().AddRange(symbols);
-            }
-
-            private ImmutableArray<ISymbol> GetOrComputeBoundSymbols(SyntaxNode node)
-            {
-                if (_boundSymbols.TryGetValue(node, out var cached))
+                if (_semanticModel is { } existing && existing.TryGetTarget(out var cached))
                 {
                     return cached;
                 }
 
-                var result = ComputeBoundSymbols(node);
-                _boundSymbols[node] = result;
-                return result;
+                var semanticModel = _semanticModelFactory();
+                _semanticModel = new WeakReference<SemanticModel>(semanticModel);
+                return semanticModel;
             }
 
-            private ImmutableArray<ISymbol> ComputeBoundSymbols(SyntaxNode node)
+            private readonly struct CollectorState
             {
-                switch (node)
+                public CollectorState(SemanticModel semanticModel)
                 {
-                    case InvocationExpressionSyntax invocation:
-                        return ComputeInvocationSymbols(invocation);
-                    case ImplicitObjectCreationExpressionSyntax implicitCreation:
-                        return ComputeObjectCreationSymbols(implicitCreation);
-                    case ObjectCreationExpressionSyntax objectCreation:
-                        return ComputeObjectCreationSymbols(objectCreation);
-                    case AttributeSyntax attribute:
-                        return ComputeAttributeSymbols(attribute);
-                    default:
-                        return ImmutableArray<ISymbol>.Empty;
+                    SemanticModel = semanticModel;
+                }
+
+                public SemanticModel SemanticModel { get; }
+            }
+        }
+
+        private sealed class SymbolList
+        {
+            public SymbolList(ImmutableArray<ISymbol> symbols)
+            {
+                Symbols = symbols;
+            }
+
+            public ImmutableArray<ISymbol> Symbols { get; }
+        }
+
+        private sealed class SymbolCollector : CSharpSyntaxWalker
+        {
+            private readonly SemanticModel _semanticModel;
+            private readonly HashSet<ISymbol> _symbols = new(SymbolEqualityComparer.Default);
+            private readonly ImmutableArray<ISymbol>.Builder _builder = ImmutableArray.CreateBuilder<ISymbol>();
+
+            private SymbolCollector(SemanticModel semanticModel)
+                : base(SyntaxWalkerDepth.StructuredTrivia)
+            {
+                _semanticModel = semanticModel;
+            }
+
+            public static ImmutableArray<ISymbol> Collect(SemanticModel semanticModel, SyntaxNode node)
+            {
+                var collector = new SymbolCollector(semanticModel);
+                collector.Visit(node);
+                return collector._builder.ToImmutable();
+            }
+
+            public override void VisitInvocationExpression(InvocationExpressionSyntax node)
+            {
+                AddSymbols(ComputeInvocationSymbols(node));
+                base.VisitInvocationExpression(node);
+            }
+
+            public override void VisitObjectCreationExpression(ObjectCreationExpressionSyntax node)
+            {
+                AddSymbols(ComputeObjectCreationSymbols(node));
+                base.VisitObjectCreationExpression(node);
+            }
+
+            public override void VisitImplicitObjectCreationExpression(ImplicitObjectCreationExpressionSyntax node)
+            {
+                AddSymbols(ComputeObjectCreationSymbols(node));
+                base.VisitImplicitObjectCreationExpression(node);
+            }
+
+            public override void VisitAttribute(AttributeSyntax node)
+            {
+                AddSymbols(ComputeAttributeSymbols(node));
+                base.VisitAttribute(node);
+            }
+
+            private void AddSymbols(ImmutableArray<ISymbol> symbols)
+            {
+                foreach (var symbol in symbols)
+                {
+                    if (symbol is null)
+                    {
+                        continue;
+                    }
+
+                    if (_symbols.Add(symbol))
+                    {
+                        _builder.Add(symbol);
+                    }
                 }
             }
 

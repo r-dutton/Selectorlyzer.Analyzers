@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
 using Selectorlyzer.Qulaly;
 using Selectorlyzer.Qulaly.Matcher;
 
@@ -56,6 +58,10 @@ namespace Selectorlyzer.FlowBuilder
             private readonly Dictionary<INamedTypeSymbol, ImmutableArray<INamedTypeSymbol>> _implementationsByInterface = new(SymbolEqualityComparer.Default);
             private readonly Dictionary<ITypeSymbol, ImmutableArray<INamedTypeSymbol>> _mediatorRequestHandlers = new(SymbolEqualityComparer.Default);
             private readonly Dictionary<ITypeSymbol, ImmutableArray<INamedTypeSymbol>> _mediatorNotificationHandlers = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<INamedTypeSymbol, HashSet<INamedTypeSymbol>> _mutableDerivedTypesByBase = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<INamedTypeSymbol, HashSet<INamedTypeSymbol>> _mutableImplementationsByInterface = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>> _mutableMediatorRequestHandlers = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>> _mutableMediatorNotificationHandlers = new(SymbolEqualityComparer.Default);
             private readonly SyntaxReferenceIndex _syntaxReferenceIndex = new();
             private bool _typeRelationsBuilt;
 
@@ -75,8 +81,7 @@ namespace Selectorlyzer.FlowBuilder
 
                 foreach (var tree in _compilation.SyntaxTrees)
                 {
-                    var semanticModel = _compilation.GetSemanticModel(tree);
-                    _syntaxReferenceIndex.IndexTree(tree, semanticModel);
+                    _syntaxReferenceIndex.IndexTree(tree, () => _compilation.GetSemanticModel(tree));
                     var root = tree.GetRoot();
                     root.QueryMatches(
                         _selectors,
@@ -259,21 +264,20 @@ namespace Selectorlyzer.FlowBuilder
                 }
 
                 var updatedCompilation = _compilation.AddSyntaxTrees(treeToAdd);
-                UpdateCompilation(updatedCompilation);
-                return treeToAdd;
-            }
-
-            private void UpdateCompilation(Compilation compilation)
-            {
-                if (ReferenceEquals(_compilation, compilation))
+                if (!ReferenceEquals(_compilation, updatedCompilation))
                 {
-                    return;
+                    _compilation = updatedCompilation;
+                    _baseContext = _baseContext.WithCompilation(updatedCompilation);
                 }
 
-                _compilation = compilation;
-                _baseContext = _baseContext.WithCompilation(compilation);
-                ResetTypeRelationMaps();
-                _syntaxReferenceIndex.Clear();
+                _syntaxReferenceIndex.IndexTree(treeToAdd, () => _compilation.GetSemanticModel(treeToAdd));
+
+                if (_typeRelationsBuilt)
+                {
+                    ExtendTypeRelationMapsForTree(treeToAdd);
+                }
+
+                return treeToAdd;
             }
 
             private NodeBuilder? GetOrCreateBuilder(ISymbol? symbol, SyntaxNode? fallbackNode)
@@ -349,17 +353,26 @@ namespace Selectorlyzer.FlowBuilder
 
                 if (origin is null)
                 {
-                    foreach (var match in node.Matches)
+                    var rootCache = new Dictionary<SyntaxTree, SyntaxNode>();
+                    foreach (var snapshot in node.MatchSnapshots)
                     {
-                        if (match.Node.SyntaxTree is not { } syntaxTree)
+                        if (snapshot.SyntaxTree is not { } syntaxTree)
                         {
                             continue;
                         }
 
-                        var semanticModel = match.SemanticModel ?? _compilation.GetSemanticModel(syntaxTree);
-                        _syntaxReferenceIndex.IndexTree(syntaxTree, semanticModel);
+                        var ensuredTree = EnsureCompilationContainsTree(syntaxTree);
+                        _syntaxReferenceIndex.IndexTree(ensuredTree, () => _compilation.GetSemanticModel(ensuredTree));
 
-                        foreach (var referencedSymbol in _syntaxReferenceIndex.GetSymbols(match.Node))
+                        if (!rootCache.TryGetValue(ensuredTree, out var ensuredRoot))
+                        {
+                            ensuredRoot = ensuredTree.GetRoot();
+                            rootCache[ensuredTree] = ensuredRoot;
+                        }
+
+                        var mappedNode = ensuredRoot.FindNode(snapshot.Span, getInnermostNodeForTie: true);
+
+                        foreach (var referencedSymbol in _syntaxReferenceIndex.GetSymbols(mappedNode))
                         {
                             AddSymbol(referencedSymbol);
                         }
@@ -372,6 +385,8 @@ namespace Selectorlyzer.FlowBuilder
                 }
 
                 ExpandOriginRelations(origin, AddSymbol);
+
+                node.ClearMatchSnapshots();
 
                 return referenced;
             }
@@ -389,8 +404,7 @@ namespace Selectorlyzer.FlowBuilder
                         mappedNode = root.FindNode(syntax.Span, getInnermostNodeForTie: true);
                     }
 
-                    var semanticModel = _compilation.GetSemanticModel(ensuredTree);
-                    _syntaxReferenceIndex.IndexTree(ensuredTree, semanticModel);
+                    _syntaxReferenceIndex.IndexTree(ensuredTree, () => _compilation.GetSemanticModel(ensuredTree));
 
                     foreach (var referencedSymbol in _syntaxReferenceIndex.GetSymbols(mappedNode))
                     {
@@ -564,91 +578,118 @@ namespace Selectorlyzer.FlowBuilder
                     return;
                 }
 
-                var derived = new Dictionary<INamedTypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
-                var implementations = new Dictionary<INamedTypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
-                var requestHandlers = new Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
-                var notificationHandlers = new Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
-
-                foreach (var namedType in EnumerateCompilationNamedTypes(_compilation))
-                {
-                    if (!namedType.Locations.Any(l => l.IsInSource))
-                    {
-                        continue;
-                    }
-
-                    if (namedType.BaseType is INamedTypeSymbol baseType)
-                    {
-                        AddRelation(derived, baseType, namedType);
-                    }
-
-                    foreach (var iface in namedType.AllInterfaces)
-                    {
-                        if (iface is not INamedTypeSymbol interfaceType)
-                        {
-                            continue;
-                        }
-
-                        AddRelation(implementations, interfaceType, namedType);
-
-                        if (iface.TypeArguments.Length == 0)
-                        {
-                            continue;
-                        }
-
-                        var messageType = UnwrapNullable(iface.TypeArguments[0]);
-                        if (messageType is null)
-                        {
-                            continue;
-                        }
-
-                        if (string.Equals(iface.Name, "IRequestHandler", StringComparison.Ordinal) ||
-                            string.Equals(iface.Name, "IRequestProcessor", StringComparison.Ordinal) ||
-                            string.Equals(iface.Name, "IPipelineBehavior", StringComparison.Ordinal))
-                        {
-                            AddRelation(requestHandlers, messageType, namedType);
-                        }
-                        else if (string.Equals(iface.Name, "INotificationHandler", StringComparison.Ordinal))
-                        {
-                            AddRelation(notificationHandlers, messageType, namedType);
-                        }
-                    }
-                }
-
-                PopulateImmutableMap(_derivedTypesByBase, derived);
-                PopulateImmutableMap(_implementationsByInterface, implementations);
-                PopulateImmutableMap(_mediatorRequestHandlers, requestHandlers);
-                PopulateImmutableMap(_mediatorNotificationHandlers, notificationHandlers);
-
-                _typeRelationsBuilt = true;
+                InitializeTypeRelationMaps();
             }
 
-            private void ResetTypeRelationMaps()
+            private void InitializeTypeRelationMaps()
             {
+                _mutableDerivedTypesByBase.Clear();
+                _mutableImplementationsByInterface.Clear();
+                _mutableMediatorRequestHandlers.Clear();
+                _mutableMediatorNotificationHandlers.Clear();
                 _derivedTypesByBase.Clear();
                 _implementationsByInterface.Clear();
                 _mediatorRequestHandlers.Clear();
                 _mediatorNotificationHandlers.Clear();
-                _typeRelationsBuilt = false;
-            }
 
-            private static void AddRelation<TKey>(Dictionary<TKey, HashSet<INamedTypeSymbol>> map, TKey key, INamedTypeSymbol value)
-                where TKey : notnull
-            {
-                if (!map.TryGetValue(key, out var set))
+                foreach (var namedType in EnumerateCompilationNamedTypes(_compilation))
                 {
-                    set = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
-                    map[key] = set;
+                    AddTypeRelations(namedType);
                 }
 
-                set.Add(value);
+                _typeRelationsBuilt = true;
             }
 
-            private static void PopulateImmutableMap<TKey>(Dictionary<TKey, ImmutableArray<INamedTypeSymbol>> target, Dictionary<TKey, HashSet<INamedTypeSymbol>> source)
+            private void ExtendTypeRelationMapsForTree(SyntaxTree tree)
+            {
+                if (!_typeRelationsBuilt || tree == null)
+                {
+                    return;
+                }
+
+                if (tree.GetRoot() is not CSharpSyntaxNode root)
+                {
+                    return;
+                }
+
+                var semanticModel = _compilation.GetSemanticModel(tree);
+                foreach (var declaration in CollectTypeDeclarations(root))
+                {
+                    if (semanticModel.GetDeclaredSymbol(declaration) is INamedTypeSymbol namedType)
+                    {
+                        AddTypeRelations(namedType);
+                    }
+                }
+            }
+
+            private void AddTypeRelations(INamedTypeSymbol namedType)
+            {
+                if (namedType is null || !namedType.Locations.Any(l => l.IsInSource))
+                {
+                    return;
+                }
+
+                if (namedType.BaseType is INamedTypeSymbol baseType)
+                {
+                    AddMutableRelation(_mutableDerivedTypesByBase, _derivedTypesByBase, baseType, namedType);
+                }
+
+                foreach (var iface in namedType.AllInterfaces)
+                {
+                    if (iface is not INamedTypeSymbol interfaceType)
+                    {
+                        continue;
+                    }
+
+                    AddMutableRelation(_mutableImplementationsByInterface, _implementationsByInterface, interfaceType, namedType);
+
+                    if (iface.TypeArguments.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    var messageType = UnwrapNullable(iface.TypeArguments[0]);
+                    if (messageType is null)
+                    {
+                        continue;
+                    }
+
+                    if (string.Equals(iface.Name, "IRequestHandler", StringComparison.Ordinal) ||
+                        string.Equals(iface.Name, "IRequestProcessor", StringComparison.Ordinal) ||
+                        string.Equals(iface.Name, "IPipelineBehavior", StringComparison.Ordinal))
+                    {
+                        AddMutableRelation(_mutableMediatorRequestHandlers, _mediatorRequestHandlers, messageType, namedType);
+                    }
+                    else if (string.Equals(iface.Name, "INotificationHandler", StringComparison.Ordinal))
+                    {
+                        AddMutableRelation(_mutableMediatorNotificationHandlers, _mediatorNotificationHandlers, messageType, namedType);
+                    }
+                }
+            }
+
+            private static IEnumerable<MemberDeclarationSyntax> CollectTypeDeclarations(CSharpSyntaxNode root)
+            {
+                var collector = new TypeDeclarationCollector();
+                collector.Visit(root);
+                return collector.Declarations;
+            }
+
+            private void AddMutableRelation<TKey>(
+                Dictionary<TKey, HashSet<INamedTypeSymbol>> mutable,
+                Dictionary<TKey, ImmutableArray<INamedTypeSymbol>> immutable,
+                TKey key,
+                INamedTypeSymbol value)
                 where TKey : notnull
             {
-                foreach (var (key, values) in source)
+                if (!mutable.TryGetValue(key, out var set))
                 {
-                    target[key] = values
+                    set = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+                    mutable[key] = set;
+                }
+
+                if (set.Add(value))
+                {
+                    immutable[key] = set
                         .OrderBy(v => v.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat), StringComparer.Ordinal)
                         .ToImmutableArray();
                 }
@@ -681,6 +722,55 @@ namespace Selectorlyzer.FlowBuilder
                             stack.Push(nested);
                         }
                     }
+                }
+            }
+
+            private sealed class TypeDeclarationCollector : CSharpSyntaxWalker
+            {
+                private readonly List<MemberDeclarationSyntax> _declarations = new();
+
+                public IReadOnlyList<MemberDeclarationSyntax> Declarations => _declarations;
+
+                public override void VisitClassDeclaration(ClassDeclarationSyntax node)
+                {
+                    _declarations.Add(node);
+                    base.VisitClassDeclaration(node);
+                }
+
+                public override void VisitStructDeclaration(StructDeclarationSyntax node)
+                {
+                    _declarations.Add(node);
+                    base.VisitStructDeclaration(node);
+                }
+
+                public override void VisitInterfaceDeclaration(InterfaceDeclarationSyntax node)
+                {
+                    _declarations.Add(node);
+                    base.VisitInterfaceDeclaration(node);
+                }
+
+                public override void VisitRecordDeclaration(RecordDeclarationSyntax node)
+                {
+                    _declarations.Add(node);
+                    base.VisitRecordDeclaration(node);
+                }
+
+                public override void VisitRecordStructDeclaration(RecordStructDeclarationSyntax node)
+                {
+                    _declarations.Add(node);
+                    base.VisitRecordStructDeclaration(node);
+                }
+
+                public override void VisitEnumDeclaration(EnumDeclarationSyntax node)
+                {
+                    _declarations.Add(node);
+                    base.VisitEnumDeclaration(node);
+                }
+
+                public override void VisitDelegateDeclaration(DelegateDeclarationSyntax node)
+                {
+                    _declarations.Add(node);
+                    base.VisitDelegateDeclaration(node);
                 }
             }
 
@@ -722,7 +812,7 @@ namespace Selectorlyzer.FlowBuilder
         private sealed class NodeBuilder
         {
             private readonly HashSet<string> _tags = new(StringComparer.OrdinalIgnoreCase);
-            private readonly List<SelectorMatch> _matches = new();
+            private readonly List<MatchSnapshot> _matchSnapshots = new();
             private readonly Dictionary<string, object?> _properties = new(StringComparer.OrdinalIgnoreCase);
             private string? _type;
             private string? _name;
@@ -749,7 +839,7 @@ namespace Selectorlyzer.FlowBuilder
 
             public FlowSpan? Span => _span;
 
-            public IReadOnlyList<SelectorMatch> Matches => _matches;
+            internal IReadOnlyList<MatchSnapshot> MatchSnapshots => _matchSnapshots;
 
             public void ApplyMatch(SelectorNodeRule rule, SelectorMatch match, string projectName, string assemblyName)
             {
@@ -759,7 +849,10 @@ namespace Selectorlyzer.FlowBuilder
                     _tags.Add(tag);
                 }
 
-                _matches.Add(match);
+                if (Symbol is null && match.Node.SyntaxTree is { } tree)
+                {
+                    _matchSnapshots.Add(new MatchSnapshot(tree, match.Node.Span));
+                }
 
                 if (match.Captures is { Count: > 0 } captures)
                 {
@@ -931,6 +1024,24 @@ namespace Selectorlyzer.FlowBuilder
                         _properties[kvp.Key] = kvp.Value;
                     }
                 }
+            }
+
+            internal void ClearMatchSnapshots()
+            {
+                _matchSnapshots.Clear();
+            }
+
+            internal readonly struct MatchSnapshot
+            {
+                public MatchSnapshot(SyntaxTree syntaxTree, TextSpan span)
+                {
+                    SyntaxTree = syntaxTree;
+                    Span = span;
+                }
+
+                public SyntaxTree SyntaxTree { get; }
+
+                public TextSpan Span { get; }
             }
         }
     }
