@@ -22,7 +22,26 @@ internal sealed class ProjectCompilationFactory
     public ProjectCompilationFactory(SolutionProjectModel solution, int parseConcurrency)
     {
         _solution = solution ?? throw new ArgumentNullException(nameof(solution));
-        _parseConcurrency = Math.Max(1, parseConcurrency);
+
+        var effectiveConcurrency = parseConcurrency <= 0
+            ? Environment.ProcessorCount
+            : parseConcurrency;
+
+        if (effectiveConcurrency < 1)
+        {
+            effectiveConcurrency = 1;
+        }
+
+        if (parseConcurrency <= 0)
+        {
+            Console.WriteLine($"[flow] Using default parse concurrency of {effectiveConcurrency} (Environment.ProcessorCount)");
+        }
+        else
+        {
+            Console.WriteLine($"[flow] Using configured parse concurrency of {effectiveConcurrency}");
+        }
+
+        _parseConcurrency = effectiveConcurrency;
         _frameworkReferences = FrameworkReferenceCache.Value;
         _baselineParseOptions = DetermineBaselineParseOptions(solution);
     }
@@ -137,8 +156,12 @@ internal sealed class ProjectCompilationFactory
         CancellationToken cancellationToken)
     {
         var trees = new SyntaxTree[sourceFiles.Count];
-        if (sourceFiles.Count < 4 || _parseConcurrency == 1)
+        var effectiveDegreeOfParallelism = Math.Max(1, _parseConcurrency);
+        var useParallelParsing = sourceFiles.Count >= 4 && effectiveDegreeOfParallelism > 1;
+
+        if (!useParallelParsing)
         {
+            Console.WriteLine($"[flow] Parsing {project.ProjectName} sequentially ({sourceFiles.Count} files, configured degree {effectiveDegreeOfParallelism})");
             for (var i = 0; i < sourceFiles.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -150,10 +173,11 @@ internal sealed class ProjectCompilationFactory
             return trees;
         }
 
+        Console.WriteLine($"[flow] Parsing {project.ProjectName} with degree of parallelism {effectiveDegreeOfParallelism} ({sourceFiles.Count} files)");
         var rangePartitioner = Partitioner.Create(0, sourceFiles.Count);
         Parallel.ForEach(rangePartitioner, new ParallelOptions
         {
-            MaxDegreeOfParallelism = _parseConcurrency,
+            MaxDegreeOfParallelism = effectiveDegreeOfParallelism,
             CancellationToken = cancellationToken
         }, range =>
         {
