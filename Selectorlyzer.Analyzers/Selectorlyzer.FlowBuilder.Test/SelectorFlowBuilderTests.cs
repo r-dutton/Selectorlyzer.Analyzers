@@ -6,6 +6,7 @@ using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Selectorlyzer.FlowBuilder;
+using Selectorlyzer.Qulaly.Matcher;
 using Selectorlyzer.TestUtilities;
 using Xunit;
 

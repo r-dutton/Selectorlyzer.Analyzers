@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -234,11 +235,28 @@ namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
 
         private static bool TryResolveMember(Type type, object target, string memberName, bool isInvocation, out object? value)
         {
-            const BindingFlags bindingFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase | BindingFlags.FlattenHierarchy;
+            const BindingFlags bindingFlags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.IgnoreCase | BindingFlags.DeclaredOnly;
 
+            for (var current = type; current is not null; current = current.BaseType)
+            {
+                if (TryResolveMemberOnType(current, target, memberName, isInvocation, bindingFlags, out value))
+                {
+                    return true;
+                }
+            }
+
+            value = null;
+            return false;
+        }
+
+        private static bool TryResolveMemberOnType(Type type, object target, string memberName, bool isInvocation, BindingFlags bindingFlags, out object? value)
+        {
             if (isInvocation)
             {
-                var method = type.GetMethod(memberName, bindingFlags, null, Type.EmptyTypes, null);
+                var method = type
+                    .GetMethods(bindingFlags)
+                    .FirstOrDefault(m => string.Equals(m.Name, memberName, StringComparison.OrdinalIgnoreCase) && m.GetParameters().Length == 0);
+
                 if (method != null)
                 {
                     value = method.Invoke(target, Array.Empty<object?>());

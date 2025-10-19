@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.IO;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Selectorlyzer.Qulaly;
 using Selectorlyzer.Qulaly.Matcher;
 
@@ -143,16 +145,39 @@ namespace Selectorlyzer.FlowBuilder
                 return new FlowGraph(orderedNodes, orderedEdges);
             }
 
-            private Compilation EnsureCompilationContainsTree(SyntaxTree syntaxTree)
+            private SyntaxTree EnsureCompilationContainsTree(SyntaxTree syntaxTree)
             {
                 if (_compilation.SyntaxTrees.Contains(syntaxTree))
                 {
-                    return _compilation;
+                    return syntaxTree;
                 }
 
-                var updatedCompilation = _compilation.AddSyntaxTrees(syntaxTree);
+                var treeToAdd = syntaxTree;
+
+                if (_compilation is CSharpCompilation cSharpCompilation)
+                {
+                    var baselineOptions = cSharpCompilation.SyntaxTrees
+                        .OfType<CSharpSyntaxTree>()
+                        .FirstOrDefault()?.Options;
+
+                    if (baselineOptions is not null)
+                    {
+                        if (syntaxTree.FilePath is { Length: > 0 } filePath && File.Exists(filePath))
+                        {
+                            var text = File.ReadAllText(filePath);
+                            treeToAdd = CSharpSyntaxTree.ParseText(text, baselineOptions, filePath);
+                        }
+                        else if (syntaxTree is CSharpSyntaxTree cSharpTree)
+                        {
+                            var text = cSharpTree.GetText();
+                            treeToAdd = CSharpSyntaxTree.ParseText(text, baselineOptions, syntaxTree.FilePath);
+                        }
+                    }
+                }
+
+                var updatedCompilation = _compilation.AddSyntaxTrees(treeToAdd);
                 UpdateCompilation(updatedCompilation);
-                return updatedCompilation;
+                return treeToAdd;
             }
 
             private void UpdateCompilation(Compilation compilation)
@@ -184,7 +209,6 @@ namespace Selectorlyzer.FlowBuilder
                     var builder = new NodeBuilder(id, symbol);
                     _symbolToId[symbol] = id;
                     _nodes[id] = builder;
-                    ApplyRulesToSymbol(builder);
                     return builder;
                 }
 
@@ -201,30 +225,6 @@ namespace Selectorlyzer.FlowBuilder
                 }
 
                 return synthetic;
-            }
-
-            private void ApplyRulesToSymbol(NodeBuilder builder)
-            {
-                if (builder.Symbol is null)
-                {
-                    return;
-                }
-
-                foreach (var syntaxReference in builder.Symbol.DeclaringSyntaxReferences)
-                {
-                    var syntax = syntaxReference.GetSyntax();
-                    var compilation = EnsureCompilationContainsTree(syntax.SyntaxTree);
-                    var semanticModel = compilation.GetSemanticModel(syntax.SyntaxTree);
-                    var context = new SelectorMatcherContext(syntax, semanticModel, _baseContext, syntax, syntax);
-                    var match = new SelectorMatch(syntax, context);
-                    foreach (var rule in _rules)
-                    {
-                        if (rule.Selector.Matcher(context))
-                        {
-                            builder.ApplyMatch(rule, match, _defaultProject, _defaultAssembly);
-                        }
-                    }
-                }
             }
 
             private IEnumerable<ISymbol> CollectReferencedSymbols(NodeBuilder node)
@@ -287,30 +287,51 @@ namespace Selectorlyzer.FlowBuilder
                 foreach (var syntaxReference in symbol.DeclaringSyntaxReferences)
                 {
                     var syntax = syntaxReference.GetSyntax();
-                    var compilation = EnsureCompilationContainsTree(syntax.SyntaxTree);
-                    var semanticModel = compilation.GetSemanticModel(syntax.SyntaxTree);
-                    CollectSymbolsFromNode(syntax, semanticModel, addSymbol);
+                    var ensuredTree = EnsureCompilationContainsTree(syntax.SyntaxTree);
+                    var mappedNode = syntax;
+                    if (!ReferenceEquals(ensuredTree, syntax.SyntaxTree))
+                    {
+                        var root = ensuredTree.GetRoot();
+                        mappedNode = root.FindNode(syntax.Span, getInnermostNodeForTie: true);
+                    }
+
+                    var semanticModel = _compilation.GetSemanticModel(ensuredTree);
+                    CollectSymbolsFromNode(mappedNode, semanticModel, addSymbol);
                 }
             }
 
             private static void CollectSymbolsFromNode(SyntaxNode node, SemanticModel semanticModel, Action<ISymbol?> addSymbol)
             {
+                var symbolCache = new Dictionary<SyntaxNode, ISymbol?>();
                 foreach (var descendant in node.DescendantNodesAndSelf())
                 {
-                    var symbolInfo = semanticModel.GetSymbolInfo(descendant);
-                    if (symbolInfo.Symbol is not null)
+                    // Filter: Only resolve symbols for relevant node types
+                    if (!(descendant is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax
+                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax
+                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax
+                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax
+                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax
+                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.InterfaceDeclarationSyntax
+                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.StructDeclarationSyntax
+                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax))
                     {
-                        addSymbol(symbolInfo.Symbol);
+                        continue;
                     }
 
-                    if (!symbolInfo.CandidateSymbols.IsDefaultOrEmpty)
+                    if (!symbolCache.TryGetValue(descendant, out var symbol))
                     {
-                        foreach (var candidate in symbolInfo.CandidateSymbols)
+                        var symbolInfo = semanticModel.GetSymbolInfo(descendant);
+                        symbol = symbolInfo.Symbol;
+                        if (symbol == null && !symbolInfo.CandidateSymbols.IsDefaultOrEmpty)
                         {
-                            addSymbol(candidate);
+                            symbol = symbolInfo.CandidateSymbols[0];
                         }
+                        symbolCache[descendant] = symbol;
                     }
-
+                    if (symbol is not null)
+                    {
+                        addSymbol(symbol);
+                    }
                     var typeInfo = semanticModel.GetTypeInfo(descendant);
                     addSymbol(typeInfo.Type);
                     addSymbol(typeInfo.ConvertedType);

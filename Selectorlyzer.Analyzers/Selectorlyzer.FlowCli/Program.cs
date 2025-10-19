@@ -4,9 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Build.Locator;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.MSBuild;
 using Selectorlyzer.FlowBuilder;
 using Selectorlyzer.Qulaly.Matcher;
 
@@ -29,14 +26,14 @@ public static class Program
 
     private static async Task<int> RunAsync(string[] args)
     {
-        EnsureMsBuildRegistered();
+        await Task.Yield();
 
         var argsList = args.ToList();
         string workspaceRoot = Directory.GetCurrentDirectory();
         var explicitSolutions = new List<string>();
         var flowPatterns = new List<string>();
         int? maxDepth = null;
-        int concurrency = Math.Max(1, Environment.ProcessorCount);
+    int concurrency = -1;
 
         for (int i = 0; i < argsList.Count; i++)
         {
@@ -74,9 +71,9 @@ public static class Program
                     }
                     break;
                 case "--concurrency":
-                    if (i + 1 < argsList.Count && int.TryParse(argsList[++i], out var parsedConcurrency) && parsedConcurrency > 0)
+                    if (i + 1 < argsList.Count && int.TryParse(argsList[++i], out var parsedConcurrency))
                     {
-                        concurrency = parsedConcurrency;
+                        concurrency = parsedConcurrency <= 0 ? -1 : parsedConcurrency;
                     }
                     break;
             }
@@ -106,33 +103,35 @@ public static class Program
         foreach (var solutionPath in solutionPaths)
         {
             Console.WriteLine($"[flow] Loading solution {solutionPath}");
-            using var msbuildWorkspace = MSBuildWorkspace.Create();
-            var solution = await msbuildWorkspace.OpenSolutionAsync(solutionPath);
-            var csharpProjects = solution.Projects
-                .Where(p => string.Equals(p.Language, LanguageNames.CSharp, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var solutionModel = SolutionProjectLoader.Load(solutionPath);
+            Console.WriteLine($"[flow] Loaded {solutionModel.Projects.Count} projects");
+
+            var factory = new ProjectCompilationFactory(solutionModel, concurrency);
+            factory.BuildAll(CancellationToken.None);
 
             var parallelOptions = new ParallelOptions
             {
-                MaxDegreeOfParallelism = Math.Max(1, concurrency)
+                MaxDegreeOfParallelism = concurrency <= 0 ? -1 : concurrency
             };
 
-            await Parallel.ForEachAsync(csharpProjects, parallelOptions, async (project, cancellationToken) =>
+            Parallel.ForEach(
+               solutionModel.Projects.Where(p => !p.ProjectName.Contains(".Tests", StringComparison.OrdinalIgnoreCase)), parallelOptions, project =>
             {
-                Console.WriteLine($"[flow] Analyzing project {project.Name}");
-                var compilation = await project.GetCompilationAsync(cancellationToken);
-                if (compilation is null)
+                Console.WriteLine($"[flow] Analyzing project {project.ProjectName}");
+                var compilation = factory.GetCompilation(project);
+                if (compilation.SyntaxTrees.Length == 0)
                 {
                     return;
                 }
 
                 var metadata = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["project"] = project.Name,
+                    ["project"] = project.ProjectName,
                     ["assembly"] = project.AssemblyName,
-                    ["solution"] = solution.FilePath
+                    ["solution"] = solutionModel.SolutionPath
                 };
-                var baseContext = new SelectorQueryContext(metadata: metadata);
+
+                var baseContext = new SelectorQueryContext(compilation: compilation, metadata: metadata);
                 var graph = builder.Build(compilation, baseContext);
                 if (graph.Nodes.Length == 0 && graph.Edges.Length == 0)
                 {
@@ -166,7 +165,7 @@ public static class Program
         var controllers = graph.Nodes
             .Where(n => string.Equals(n.Type, "endpoint.controller", StringComparison.OrdinalIgnoreCase))
             .Where(n => patterns.Count == 0 || patterns.Any(p => n.Fqdn.Contains(p, StringComparison.OrdinalIgnoreCase) || n.Name.Contains(p, StringComparison.OrdinalIgnoreCase)))
-            .OrderBy(n => n.Fqdn, StringComparison.OrdinalIgnoreCase)
+            .OrderBy(n => n.Fqdn, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         if (controllers.Count == 0)
@@ -254,14 +253,6 @@ public static class Program
 
         var detailText = details.Count > 0 ? " (" + string.Join(", ", details) + ")" : string.Empty;
         return $"{node.Type}: {node.Fqdn}{assembly}{detailText}";
-    }
-
-    private static void EnsureMsBuildRegistered()
-    {
-        if (!MSBuildLocator.IsRegistered)
-        {
-            MSBuildLocator.RegisterDefaults();
-        }
     }
 
     private static string ResolvePath(string workspaceRoot, string candidate)

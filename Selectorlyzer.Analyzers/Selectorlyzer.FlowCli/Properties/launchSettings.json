@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Selectorlyzer.FlowCli": {
+      "commandName": "Project",
+      "commandLineArgs": "--workspace .\\ --write-out d:/out/ --solution D:/Workpapers/Workpapers.Next.sln --concurrency 24"
+    }
+  }
+}
