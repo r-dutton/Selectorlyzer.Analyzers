@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using System.Linq;
 
 namespace Selectorlyzer.FlowBuilder;
@@ -195,9 +196,17 @@ public sealed class FlowGraphComposer
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(callerId) && nodesById.TryGetValue(callerId!, out var callerNode))
+            {
+                AddEdge(edgeKeys, edges, callerNode.Id, call.Id, "flow");
+            }
+
             if (candidateActions.Count == 0 && targetAssemblies is null && canonicalVerb is null && canonicalRoute is null)
             {
-                candidateActions = actions;
+                Trace.TraceInformation(
+                    "[flow] Skipping remote edge augmentation for call '{0}' because no bindings, verb, or route metadata was provided.",
+                    call.Id);
+                continue;
             }
 
             if (candidateActions.Count == 0)
@@ -208,12 +217,16 @@ public sealed class FlowGraphComposer
             var matchedActions = FilterActionsByRouteAndVerb(candidateActions, route, verb);
             if (matchedActions.Count == 0)
             {
-                matchedActions = candidateActions;
-            }
+                if (candidateActions.Count > 0)
+                {
+                    Trace.TraceInformation(
+                        "[flow] No remote endpoints matched call '{0}' (verb='{1}', route='{2}').",
+                        call.Id,
+                        verb ?? string.Empty,
+                        route ?? string.Empty);
+                }
 
-            if (!string.IsNullOrWhiteSpace(callerId) && nodesById.TryGetValue(callerId!, out var callerNode))
-            {
-                AddEdge(edgeKeys, edges, callerNode.Id, call.Id, "flow");
+                continue;
             }
 
             foreach (var action in matchedActions)
