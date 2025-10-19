@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -862,6 +863,49 @@ namespace Sample
                 .ToArray();
 
             invocationMatches.Should().ContainSingle();
+        }
+
+        [Fact]
+        public void QueryMatches_BatchedSelectors_EnumeratesAllMatches()
+        {
+            var syntaxTree = CSharpSyntaxTree.ParseText(@"class Demo { void Run() { } }");
+            var compilation = CSharpCompilation.Create("Test").AddSyntaxTrees(syntaxTree);
+            var root = syntaxTree.GetCompilationUnitRoot();
+
+            var selectors = new[]
+            {
+                QulalySelector.Parse(":class"),
+                QulalySelector.Parse(":method")
+            };
+
+            var dispatch = new Dictionary<SyntaxKind, int[]>
+            {
+                [SyntaxKind.ClassDeclaration] = new[] { 0 },
+                [SyntaxKind.MethodDeclaration] = new[] { 1 }
+            };
+
+            var general = Array.Empty<int>();
+            var classMatches = new List<SyntaxNode>();
+            var methodMatches = new List<SyntaxNode>();
+
+            root.QueryMatches(
+                selectors,
+                node => dispatch.TryGetValue(node.Kind(), out var indices) ? indices : general,
+                (index, match) =>
+                {
+                    if (index == 0)
+                    {
+                        classMatches.Add(match.Node);
+                    }
+                    else if (index == 1)
+                    {
+                        methodMatches.Add(match.Node);
+                    }
+                },
+                compilation);
+
+            classMatches.Should().ContainSingle().Which.Should().BeOfType<ClassDeclarationSyntax>();
+            methodMatches.Should().ContainSingle().Which.Should().BeOfType<MethodDeclarationSyntax>();
         }
 
         [Fact]

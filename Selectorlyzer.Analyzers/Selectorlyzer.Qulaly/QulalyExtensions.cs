@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -55,6 +56,47 @@ namespace Selectorlyzer.Qulaly
             var semanticModel = effectiveCompilation?.GetSemanticModel(node.SyntaxTree);
             var context = (queryContext ?? SelectorQueryContext.Empty).WithCompilation(effectiveCompilation);
             return EnumerableMatcher.GetMatches(node, selector, semanticModel, context);
+        }
+
+        public static void QueryMatches(
+            this SyntaxNode node,
+            IReadOnlyList<QulalySelector> selectors,
+            Func<SyntaxNode, IReadOnlyList<int>> selectorProvider,
+            Action<int, SelectorMatch> onMatch,
+            Compilation? compilation = default,
+            SelectorQueryContext? queryContext = null)
+        {
+            if (node is null)
+            {
+                throw new ArgumentNullException(nameof(node));
+            }
+
+            if (selectors is null)
+            {
+                throw new ArgumentNullException(nameof(selectors));
+            }
+
+            if (selectorProvider is null)
+            {
+                throw new ArgumentNullException(nameof(selectorProvider));
+            }
+
+            if (onMatch is null)
+            {
+                throw new ArgumentNullException(nameof(onMatch));
+            }
+
+            if (selectors.Count == 0)
+            {
+                return;
+            }
+
+            var effectiveCompilation = EnsureCompilationContainsTree(
+                compilation ?? queryContext?.Compilation,
+                node.SyntaxTree);
+            var semanticModel = effectiveCompilation?.GetSemanticModel(node.SyntaxTree);
+            var context = (queryContext ?? SelectorQueryContext.Empty).WithCompilation(effectiveCompilation);
+            EnumerableMatcher.ForEachMatch(node, selectors, semanticModel, context, selectorProvider, onMatch);
         }
 
         public static SyntaxNode? QuerySelector(this SyntaxTree syntaxTree, string selector, Compilation? compilation = default, SelectorQueryContext? queryContext = null)

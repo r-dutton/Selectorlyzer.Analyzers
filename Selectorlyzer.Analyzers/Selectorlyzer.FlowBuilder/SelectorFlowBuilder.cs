@@ -43,6 +43,9 @@ namespace Selectorlyzer.FlowBuilder
             private Compilation _compilation;
             private SelectorQueryContext _baseContext;
             private readonly IReadOnlyList<SelectorNodeRule> _rules;
+            private readonly ImmutableArray<QulalySelector> _selectors;
+            private readonly int[] _globalRuleIndices;
+            private readonly Dictionary<SyntaxKind, int[]> _ruleIndicesByKind;
             private readonly Dictionary<string, NodeBuilder> _nodes = new(StringComparer.Ordinal);
             private readonly Dictionary<ISymbol, string> _symbolToId = new(SymbolEqualityComparer.Default);
             private readonly List<FlowEdge> _edges = new();
@@ -60,6 +63,7 @@ namespace Selectorlyzer.FlowBuilder
                 _compilation = compilation;
                 _baseContext = baseContext;
                 _rules = rules;
+                (_selectors, _globalRuleIndices, _ruleIndicesByKind) = BuildSelectorDispatchTables(rules);
                 _defaultAssembly = compilation.AssemblyName ?? "Assembly";
                 _defaultProject = baseContext.Metadata?.GetValueOrDefault("project") as string ?? _defaultAssembly;
             }
@@ -71,21 +75,90 @@ namespace Selectorlyzer.FlowBuilder
                 foreach (var tree in _compilation.SyntaxTrees)
                 {
                     var root = tree.GetRoot();
-                    foreach (var rule in _rules)
-                    {
-                        foreach (var match in root.QueryMatches(rule.Selector, _compilation, _baseContext))
-                        {
-                            var symbol = rule.UseSymbolIdentity ? match.Symbol : null;
-                            var builder = GetOrCreateBuilder(symbol, match.Node);
-                            if (builder is null)
-                            {
-                                continue;
-                            }
+                    root.QueryMatches(
+                        _selectors,
+                        GetCandidateRuleIndices,
+                        HandleRuleMatch,
+                        _compilation,
+                        _baseContext);
+                }
+            }
 
-                            builder.ApplyMatch(rule, match, _defaultProject, _defaultAssembly);
+            private static (ImmutableArray<QulalySelector> Selectors, int[] GlobalRuleIndices, Dictionary<SyntaxKind, int[]> RuleIndicesByKind)
+                BuildSelectorDispatchTables(IReadOnlyList<SelectorNodeRule> rules)
+            {
+                var selectorBuilder = ImmutableArray.CreateBuilder<QulalySelector>(rules.Count);
+                var global = new List<int>();
+                var targeted = new Dictionary<SyntaxKind, List<int>>();
+
+                for (var i = 0; i < rules.Count; i++)
+                {
+                    var selector = rules[i].Selector;
+                    selectorBuilder.Add(selector);
+
+                    var kinds = selector.GetTopLevelSyntaxKinds();
+                    if (kinds.Count == 0)
+                    {
+                        global.Add(i);
+                        continue;
+                    }
+
+                    foreach (var kind in kinds)
+                    {
+                        if (!targeted.TryGetValue(kind, out var list))
+                        {
+                            list = new List<int>();
+                            targeted[kind] = list;
                         }
+
+                        list.Add(i);
                     }
                 }
+
+                var globalArray = global.Count > 0 ? global.ToArray() : Array.Empty<int>();
+                var ruleIndicesByKind = new Dictionary<SyntaxKind, int[]>(targeted.Count);
+
+                foreach (var kvp in targeted)
+                {
+                    var specific = kvp.Value;
+                    var combined = new int[globalArray.Length + specific.Count];
+                    if (globalArray.Length > 0)
+                    {
+                        Array.Copy(globalArray, combined, globalArray.Length);
+                    }
+
+                    if (specific.Count > 0)
+                    {
+                        specific.CopyTo(combined, globalArray.Length);
+                    }
+
+                    ruleIndicesByKind[kvp.Key] = combined;
+                }
+
+                return (selectorBuilder.ToImmutable(), globalArray, ruleIndicesByKind);
+            }
+
+            private IReadOnlyList<int> GetCandidateRuleIndices(SyntaxNode node)
+            {
+                if (_ruleIndicesByKind.TryGetValue(node.Kind(), out var indices))
+                {
+                    return indices;
+                }
+
+                return _globalRuleIndices;
+            }
+
+            private void HandleRuleMatch(int ruleIndex, SelectorMatch match)
+            {
+                var rule = _rules[ruleIndex];
+                var symbol = rule.UseSymbolIdentity ? match.Symbol : null;
+                var builder = GetOrCreateBuilder(symbol, match.Node);
+                if (builder is null)
+                {
+                    return;
+                }
+
+                builder.ApplyMatch(rule, match, _defaultProject, _defaultAssembly);
             }
 
             public void Propagate()
