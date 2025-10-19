@@ -43,6 +43,38 @@ public sealed class FlowGraphComposer
             .Where(n => string.Equals(n.Type, "endpoint.controller_action", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
+        var actionsByAssembly = new Dictionary<string, List<FlowNode>>(StringComparer.OrdinalIgnoreCase);
+        var actionsByVerbAndRoute = new Dictionary<(string? Verb, string? Route), List<FlowNode>>(VerbRouteKeyComparer.Instance);
+
+        foreach (var action in actions)
+        {
+            if (!string.IsNullOrWhiteSpace(action.Assembly))
+            {
+                AddIndexedAction(actionsByAssembly, action.Assembly!, action);
+            }
+
+            var actionFullRoute = GetStringProperty(action, "full_route");
+            var actionSimpleRoute = GetStringProperty(action, "route");
+            var canonicalRoute = CanonicalizeRoute(actionFullRoute) ?? CanonicalizeRoute(actionSimpleRoute);
+            var httpMethod = GetStringProperty(action, "http_method");
+            var canonicalVerb = string.IsNullOrWhiteSpace(httpMethod) ? null : httpMethod!.Trim().ToUpperInvariant();
+
+            if (canonicalVerb is not null || canonicalRoute is not null)
+            {
+                AddIndexedAction(actionsByVerbAndRoute, (canonicalVerb, canonicalRoute), action);
+
+                if (canonicalVerb is not null)
+                {
+                    AddIndexedAction(actionsByVerbAndRoute, (canonicalVerb, null), action);
+                }
+
+                if (canonicalRoute is not null)
+                {
+                    AddIndexedAction(actionsByVerbAndRoute, (null, canonicalRoute), action);
+                }
+            }
+        }
+
         var httpCalls = graph.Nodes
             .Where(n => string.Equals(n.Type, "infra.http_call", StringComparison.OrdinalIgnoreCase))
             .ToList();
@@ -62,6 +94,8 @@ public sealed class FlowGraphComposer
             var callerType = GetStringProperty(call, "caller_type");
             var callerId = GetStringProperty(call, "caller_id");
             var baseUrl = GetStringProperty(call, "base_url");
+            var canonicalRoute = CanonicalizeRoute(route);
+            var canonicalVerb = string.IsNullOrWhiteSpace(verb) ? null : verb!.Trim().ToUpperInvariant();
 
             var targetServices = new List<FlowServiceDefinition>();
 
@@ -117,13 +151,54 @@ public sealed class FlowGraphComposer
                 }
             }
 
-            var candidateActions = targetAssemblies is null
-                ? actions
-                : actions.Where(a =>
+            var candidateActions = new List<FlowNode>();
+            HashSet<string>? candidateIds = null;
+
+            void AddCandidates(IEnumerable<FlowNode> source)
+            {
+                candidateIds ??= new HashSet<string>(StringComparer.Ordinal);
+                foreach (var action in source)
                 {
-                    var assembly = a.Assembly;
-                    return !string.IsNullOrWhiteSpace(assembly) && targetAssemblies.Contains(assembly);
-                }).ToList();
+                    if (candidateIds.Add(action.Id))
+                    {
+                        candidateActions.Add(action);
+                    }
+                }
+            }
+
+            if (targetAssemblies is not null)
+            {
+                foreach (var assembly in targetAssemblies)
+                {
+                    if (actionsByAssembly.TryGetValue(assembly, out var assemblyActions))
+                    {
+                        AddCandidates(assemblyActions);
+                    }
+                }
+            }
+
+            if (canonicalVerb is not null || canonicalRoute is not null)
+            {
+                if (actionsByVerbAndRoute.TryGetValue((canonicalVerb, canonicalRoute), out var byVerbAndRoute))
+                {
+                    AddCandidates(byVerbAndRoute);
+                }
+
+                if (canonicalVerb is not null && actionsByVerbAndRoute.TryGetValue((canonicalVerb, null), out var byVerb))
+                {
+                    AddCandidates(byVerb);
+                }
+
+                if (canonicalRoute is not null && actionsByVerbAndRoute.TryGetValue((null, canonicalRoute), out var byRoute))
+                {
+                    AddCandidates(byRoute);
+                }
+            }
+
+            if (candidateActions.Count == 0 && targetAssemblies is null && canonicalVerb is null && canonicalRoute is null)
+            {
+                candidateActions = actions;
+            }
 
             if (candidateActions.Count == 0)
             {
@@ -215,6 +290,18 @@ public sealed class FlowGraphComposer
         }
 
         return dictionary;
+    }
+
+    private static void AddIndexedAction<TKey>(Dictionary<TKey, List<FlowNode>> dictionary, TKey key, FlowNode action)
+        where TKey : notnull
+    {
+        if (!dictionary.TryGetValue(key, out var list))
+        {
+            list = new List<FlowNode>();
+            dictionary[key] = list;
+        }
+
+        list.Add(action);
     }
 
     private static IReadOnlyList<FlowNode> FilterActionsByRouteAndVerb(
@@ -340,6 +427,24 @@ public sealed class FlowGraphComposer
         }
 
         return trimmed;
+    }
+
+    private sealed class VerbRouteKeyComparer : IEqualityComparer<(string? Verb, string? Route)>
+    {
+        public static VerbRouteKeyComparer Instance { get; } = new();
+
+        public bool Equals((string? Verb, string? Route) x, (string? Verb, string? Route) y)
+        {
+            return string.Equals(x.Verb, y.Verb, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(x.Route, y.Route, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public int GetHashCode((string? Verb, string? Route) obj)
+        {
+            var verbHash = obj.Verb is null ? 0 : StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Verb);
+            var routeHash = obj.Route is null ? 0 : StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Route);
+            return HashCode.Combine(verbHash, routeHash);
+        }
     }
 
     public sealed class Composition
