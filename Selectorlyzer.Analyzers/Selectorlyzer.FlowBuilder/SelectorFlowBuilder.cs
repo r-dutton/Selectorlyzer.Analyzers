@@ -56,6 +56,7 @@ namespace Selectorlyzer.FlowBuilder
             private readonly Dictionary<INamedTypeSymbol, ImmutableArray<INamedTypeSymbol>> _implementationsByInterface = new(SymbolEqualityComparer.Default);
             private readonly Dictionary<ITypeSymbol, ImmutableArray<INamedTypeSymbol>> _mediatorRequestHandlers = new(SymbolEqualityComparer.Default);
             private readonly Dictionary<ITypeSymbol, ImmutableArray<INamedTypeSymbol>> _mediatorNotificationHandlers = new(SymbolEqualityComparer.Default);
+            private readonly SyntaxReferenceIndex _syntaxReferenceIndex = new();
             private bool _typeRelationsBuilt;
 
             public NodeRegistry(Compilation compilation, SelectorQueryContext baseContext, IReadOnlyList<SelectorNodeRule> rules)
@@ -74,6 +75,8 @@ namespace Selectorlyzer.FlowBuilder
 
                 foreach (var tree in _compilation.SyntaxTrees)
                 {
+                    var semanticModel = _compilation.GetSemanticModel(tree);
+                    _syntaxReferenceIndex.IndexTree(tree, semanticModel);
                     var root = tree.GetRoot();
                     root.QueryMatches(
                         _selectors,
@@ -270,6 +273,7 @@ namespace Selectorlyzer.FlowBuilder
                 _compilation = compilation;
                 _baseContext = _baseContext.WithCompilation(compilation);
                 ResetTypeRelationMaps();
+                _syntaxReferenceIndex.Clear();
             }
 
             private NodeBuilder? GetOrCreateBuilder(ISymbol? symbol, SyntaxNode? fallbackNode)
@@ -343,14 +347,23 @@ namespace Selectorlyzer.FlowBuilder
                     CollectSymbolsFromSymbol(origin, AddSymbol);
                 }
 
-                foreach (var match in node.Matches)
+                if (origin is null)
                 {
-                    if (match.SemanticModel is not { } semanticModel)
+                    foreach (var match in node.Matches)
                     {
-                        continue;
-                    }
+                        if (match.Node.SyntaxTree is not { } syntaxTree)
+                        {
+                            continue;
+                        }
 
-                    CollectSymbolsFromNode(match.Node, semanticModel, AddSymbol);
+                        var semanticModel = match.SemanticModel ?? _compilation.GetSemanticModel(syntaxTree);
+                        _syntaxReferenceIndex.IndexTree(syntaxTree, semanticModel);
+
+                        foreach (var referencedSymbol in _syntaxReferenceIndex.GetSymbols(match.Node))
+                        {
+                            AddSymbol(referencedSymbol);
+                        }
+                    }
                 }
 
                 foreach (var candidate in referenced.ToArray())
@@ -377,45 +390,12 @@ namespace Selectorlyzer.FlowBuilder
                     }
 
                     var semanticModel = _compilation.GetSemanticModel(ensuredTree);
-                    CollectSymbolsFromNode(mappedNode, semanticModel, addSymbol);
-                }
-            }
+                    _syntaxReferenceIndex.IndexTree(ensuredTree, semanticModel);
 
-            private static void CollectSymbolsFromNode(SyntaxNode node, SemanticModel semanticModel, Action<ISymbol?> addSymbol)
-            {
-                var symbolCache = new Dictionary<SyntaxNode, ISymbol?>();
-                foreach (var descendant in node.DescendantNodesAndSelf())
-                {
-                    // Filter: Only resolve symbols for relevant node types
-                    if (!(descendant is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax
-                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax
-                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.MethodDeclarationSyntax
-                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.ClassDeclarationSyntax
-                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax
-                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.InterfaceDeclarationSyntax
-                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.StructDeclarationSyntax
-                        || descendant is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax))
+                    foreach (var referencedSymbol in _syntaxReferenceIndex.GetSymbols(mappedNode))
                     {
-                        continue;
+                        addSymbol(referencedSymbol);
                     }
-
-                    if (!symbolCache.TryGetValue(descendant, out var symbol))
-                    {
-                        var symbolInfo = semanticModel.GetSymbolInfo(descendant);
-                        symbol = symbolInfo.Symbol;
-                        if (symbol == null && !symbolInfo.CandidateSymbols.IsDefaultOrEmpty)
-                        {
-                            symbol = symbolInfo.CandidateSymbols[0];
-                        }
-                        symbolCache[descendant] = symbol;
-                    }
-                    if (symbol is not null)
-                    {
-                        addSymbol(symbol);
-                    }
-                    var typeInfo = semanticModel.GetTypeInfo(descendant);
-                    addSymbol(typeInfo.Type);
-                    addSymbol(typeInfo.ConvertedType);
                 }
             }
 
