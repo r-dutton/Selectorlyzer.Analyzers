@@ -1,37 +1,36 @@
-﻿using System;
-using System.Linq;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System;
 
 namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
 {
-    public class PropertyItemContainsMatchSelector : PropertySelector
+    public class PropertyItemContainsMatchSelector : PropertyStringMatchSelector
     {
-        public string Value { get; }
-
-        public PropertyItemContainsMatchSelector(string propertyName, string value)
-            : base(propertyName)
+        public PropertyItemContainsMatchSelector(string propertyName, string value, bool caseInsensitive = false, bool negate = false)
+            : base(propertyName, value, caseInsensitive, negate)
         {
-            Value = value;
         }
 
         public override SelectorMatcher GetMatcher()
         {
-            if (Value == string.Empty) return (in SelectorMatcherContext ctx) => false;
-
-            return (in SelectorMatcherContext ctx) =>
+            return (in SelectorMatcherContext ctx) => Evaluate(ctx, candidate =>
             {
-                if (PropertyName == "Modifiers" && ctx.Node is MemberDeclarationSyntax memberDeclarationSyntax)
+                var tokens = candidate.Split(new[] { ' ', '\t', '\r', '\n', '\f' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var token in tokens)
                 {
-                    return memberDeclarationSyntax.Modifiers.Any(x => x.ValueText == Value);
+                    if (string.Equals(token, Value, Comparison))
+                    {
+                        return true;
+                    }
                 }
 
-                return GetPropertyValue(ctx)?.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).Contains(Value) ?? false;
-            };
+                return false;
+            });
         }
 
         public override string ToSelectorString()
         {
-            return $"[{PropertyName}~='{Value}']";
+            var negation = Negate ? "!" : string.Empty;
+            var modifier = CaseInsensitive ? " i" : string.Empty;
+            return $"[{PropertyName}{negation}~='{Value}'{modifier}]";
         }
     }
 }

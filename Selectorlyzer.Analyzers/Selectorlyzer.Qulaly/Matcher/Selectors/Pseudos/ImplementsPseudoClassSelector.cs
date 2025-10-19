@@ -1,6 +1,6 @@
-﻿using System;
+using System;
 using System.Linq;
-using Microsoft.CodeAnalysis;
+using Selectorlyzer.Qulaly.Matcher;
 
 namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
 {
@@ -28,7 +28,14 @@ namespace Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos
 
             return (in SelectorMatcherContext ctx) =>
             {
-                return ctx.Node.QuerySelector("BaseList SimpleBaseType")?.QuerySelector(query) != null;
+                var baseTypeNode = ctx.Node.QuerySelector("BaseList SimpleBaseType", ctx.Compilation, ctx.QueryContext);
+                if (baseTypeNode is null)
+                {
+                    return false;
+                }
+
+                var baseContext = new SelectorMatcherContext(baseTypeNode, ctx.SemanticModel, ctx.QueryContext, ctx.Scope, ctx.Root);
+                return EnumerableMatcher.GetEnumerable(query, baseContext).Any();
             };
         }
 

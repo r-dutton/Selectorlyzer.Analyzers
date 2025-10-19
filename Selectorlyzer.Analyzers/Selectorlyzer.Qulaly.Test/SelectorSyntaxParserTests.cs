@@ -87,6 +87,16 @@ namespace Qulaly.Tests
         }
 
         [Fact]
+        public void PseudoCapture()
+        {
+            var selector = new SelectorSyntaxParser().Parse(":capture(flowId, Symbol.Name)");
+            var expected = new ComplexSelectorList(new ComplexSelector(
+                new CapturePseudoClassSelector("flowId", "Symbol.Name")));
+
+            selector.ToSelectorString().Should().Be(expected.ToSelectorString());
+        }
+
+        [Fact]
         public void Property_Eq()
         {
             var selector = new SelectorSyntaxParser().Parse("[Name = 123]");
@@ -148,6 +158,51 @@ namespace Qulaly.Tests
             var selector = new SelectorSyntaxParser().Parse("[Name='A']");
             selector.Should().BeOfType<ComplexSelectorList>();
             selector.ToSelectorString().Should().Be(new ComplexSelectorList(new ComplexSelector(new PropertyExactMatchSelector("Name", "A"))).ToSelectorString());
+        }
+
+        [Fact]
+        public void Property_Context_DashMatch()
+        {
+            var selector = new SelectorSyntaxParser().Parse(":scope[Context.Role|='role']");
+            selector.Should().BeOfType<ComplexSelectorList>();
+            selector.ToSelectorString().Should().Be(
+                new ComplexSelectorList(
+                    new ComplexSelector(
+                        new CompoundSelector(
+                            new ScopePseudoClassSelector(),
+                            new PropertyDashMatchSelector("Context.Role", "role")
+                        )
+                    )
+                ).ToSelectorString());
+        }
+
+        [Fact]
+        public void Property_Symbol_Access()
+        {
+            var selector = new SelectorSyntaxParser().Parse(":class[Symbol.Name='Program']");
+            selector.Should().BeOfType<ComplexSelectorList>();
+            selector.ToSelectorString().Should().Be(
+                new ComplexSelectorList(
+                    new ComplexSelector(
+                        new CompoundSelector(
+                            new ClassPseudoClassSelector(),
+                            new PropertyExactMatchSelector("Symbol.Name", "Program")
+                        )
+                    )
+                ).ToSelectorString());
+        }
+
+        [Fact]
+        public void Property_MetadataAlias()
+        {
+            var selector = new SelectorSyntaxParser().Parse("[@flow.Target='UserService']");
+            selector.Should().BeOfType<ComplexSelectorList>();
+            selector.ToSelectorString().Should().Be(
+                new ComplexSelectorList(
+                    new ComplexSelector(
+                        new PropertyExactMatchSelector("@flow.Target", "UserService")
+                    )
+                ).ToSelectorString());
         }
 
         [Fact]
