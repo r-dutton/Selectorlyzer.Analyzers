@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -120,6 +122,33 @@ namespace Selectorlyzer.FlowBuilder.Tests
             graph.Nodes.Should().Contain(node => node.Fqdn == "External.Extra");
         }
 
+        [Fact]
+        public void Build_ScalesLinearly_ForLargeTypeGraph()
+        {
+            var smallCompilation = CreateLargeTypeGraph(150);
+            var largeCompilation = CreateLargeTypeGraph(300);
+
+            var smallBuilder = CreateCatchAllBuilder();
+            smallBuilder.Build(smallCompilation);
+
+            var stopwatch = Stopwatch.StartNew();
+            smallBuilder.Build(smallCompilation);
+            stopwatch.Stop();
+            var smallDuration = stopwatch.Elapsed;
+            smallDuration.Should().BeGreaterThan(TimeSpan.Zero);
+
+            var largeBuilder = CreateCatchAllBuilder();
+            largeBuilder.Build(largeCompilation);
+
+            stopwatch.Restart();
+            largeBuilder.Build(largeCompilation);
+            stopwatch.Stop();
+            var largeDuration = stopwatch.Elapsed;
+
+            var ratio = largeDuration.TotalMilliseconds / Math.Max(smallDuration.TotalMilliseconds, 1d);
+            ratio.Should().BeLessThan(4d);
+        }
+
         private static IReadOnlyList<FlowNode> CollectReachable(FlowGraph graph, string startId)
         {
             var nodesById = graph.Nodes.ToDictionary(n => n.Id);
@@ -153,6 +182,61 @@ namespace Selectorlyzer.FlowBuilder.Tests
             return visited
                 .Select(id => nodesById[id])
                 .ToArray();
+        }
+
+        private static SelectorFlowBuilder CreateCatchAllBuilder()
+        {
+            var selectorNodeRuleType = typeof(SelectorFlowBuilder).Assembly.GetType("Selectorlyzer.FlowBuilder.SelectorNodeRule", throwOnError: true)!;
+            var createMethod = selectorNodeRuleType.GetMethod("Create", BindingFlags.Public | BindingFlags.Static)!;
+            var rule = createMethod.Invoke(null, new object?[] { "perf.all", ":class", null, true, null });
+            var rules = Array.CreateInstance(selectorNodeRuleType, 1);
+            rules.SetValue(rule, 0);
+
+            return (SelectorFlowBuilder)Activator.CreateInstance(
+                typeof(SelectorFlowBuilder),
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                binder: null,
+                args: new object?[] { rules },
+                culture: null)!;
+        }
+
+        private static Compilation CreateLargeTypeGraph(int size)
+        {
+            var source = new StringBuilder();
+            source.AppendLine("namespace LargeGraph");
+            source.AppendLine("{");
+            source.AppendLine("    public interface IRequest { }");
+            source.AppendLine("    public interface INotification { }");
+            source.AppendLine("    public interface IRequestHandler<TRequest> where TRequest : IRequest { void Handle(TRequest request); }");
+            source.AppendLine("    public interface IRequestProcessor<TRequest> where TRequest : IRequest { void Process(TRequest request); }");
+            source.AppendLine("    public interface IPipelineBehavior<TRequest> where TRequest : IRequest { void Process(TRequest request); }");
+            source.AppendLine("    public interface INotificationHandler<TNotification> where TNotification : INotification { void Handle(TNotification notification); }");
+            source.AppendLine("    public interface IServiceBase { void Execute(); }");
+            source.AppendLine("    public class BaseType0 : IServiceBase { public virtual void Execute() { } }");
+            for (var i = 1; i <= size; i++)
+            {
+                source.AppendLine($"    public class BaseType{i} : BaseType{i - 1} {{ public override void Execute() {{ base.Execute(); }} }}");
+            }
+
+            for (var i = 0; i < size; i++)
+            {
+                source.AppendLine($"    public interface IService{i} : IServiceBase {{ void Run{i}(); }}");
+                source.AppendLine($"    public class Service{i} : BaseType{i + 1}, IService{i} {{ public override void Execute() {{ base.Execute(); }} public void Run{i}() {{ }} }}");
+                source.AppendLine($"    public class Request{i} : IRequest {{ }}");
+                source.AppendLine($"    public class Request{i}Handler : IRequestHandler<Request{i}>, IRequestProcessor<Request{i}>, IPipelineBehavior<Request{i}> {{ public void Handle(Request{i} request) {{ }} public void Process(Request{i} request) {{ }} }}");
+                source.AppendLine($"    public class Notification{i} : INotification {{ }}");
+                source.AppendLine($"    public class Notification{i}Handler : INotificationHandler<Notification{i}> {{ public void Handle(Notification{i} notification) {{ }} }}");
+            }
+
+            source.AppendLine("}");
+
+            var syntaxTree = CSharpSyntaxTree.ParseText(source.ToString());
+            var references = new[]
+            {
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
+            };
+
+            return CSharpCompilation.Create("LargeGraph", new[] { syntaxTree }, references);
         }
     }
 }

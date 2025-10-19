@@ -49,6 +49,11 @@ namespace Selectorlyzer.FlowBuilder
             private readonly HashSet<(string From, string To, string Kind)> _edgeKeys = new();
             private readonly string _defaultProject;
             private readonly string _defaultAssembly;
+            private readonly Dictionary<INamedTypeSymbol, ImmutableArray<INamedTypeSymbol>> _derivedTypesByBase = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<INamedTypeSymbol, ImmutableArray<INamedTypeSymbol>> _implementationsByInterface = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<ITypeSymbol, ImmutableArray<INamedTypeSymbol>> _mediatorRequestHandlers = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<ITypeSymbol, ImmutableArray<INamedTypeSymbol>> _mediatorNotificationHandlers = new(SymbolEqualityComparer.Default);
+            private bool _typeRelationsBuilt;
 
             public NodeRegistry(Compilation compilation, SelectorQueryContext baseContext, IReadOnlyList<SelectorNodeRule> rules)
             {
@@ -61,6 +66,8 @@ namespace Selectorlyzer.FlowBuilder
 
             public void Index()
             {
+                BuildTypeRelationMaps();
+
                 foreach (var tree in _compilation.SyntaxTrees)
                 {
                     var root = tree.GetRoot();
@@ -189,6 +196,7 @@ namespace Selectorlyzer.FlowBuilder
 
                 _compilation = compilation;
                 _baseContext = _baseContext.WithCompilation(compilation);
+                ResetTypeRelationMaps();
             }
 
             private NodeBuilder? GetOrCreateBuilder(ISymbol? symbol, SyntaxNode? fallbackNode)
@@ -398,51 +406,58 @@ namespace Selectorlyzer.FlowBuilder
                     return;
                 }
 
+                BuildTypeRelationMaps();
+
                 if (origin is IMethodSymbol methodSymbol && methodSymbol.ContainingType?.TypeKind == TypeKind.Interface)
                 {
-                    foreach (var namedType in EnumerateNamedTypes())
+                    if (methodSymbol.ContainingType is { } interfaceType &&
+                        _implementationsByInterface.TryGetValue(interfaceType, out var implementations))
                     {
-                        var implementation = namedType.FindImplementationForInterfaceMember(methodSymbol);
-                        if (implementation is not null)
+                        foreach (var namedType in implementations)
                         {
-                            addSymbol(namedType);
-                            addSymbol(implementation);
+                            var implementation = namedType.FindImplementationForInterfaceMember(methodSymbol);
+                            if (implementation is not null)
+                            {
+                                addSymbol(namedType);
+                                addSymbol(implementation);
+                            }
                         }
                     }
                 }
 
                 if (origin is IPropertySymbol propertySymbol && propertySymbol.ContainingType?.TypeKind == TypeKind.Interface)
                 {
-                    foreach (var namedType in EnumerateNamedTypes())
+                    if (propertySymbol.ContainingType is { } interfaceType &&
+                        _implementationsByInterface.TryGetValue(interfaceType, out var implementations))
                     {
-                        var implementation = namedType.FindImplementationForInterfaceMember(propertySymbol);
-                        if (implementation is not null)
+                        foreach (var namedType in implementations)
                         {
-                            addSymbol(namedType);
-                            addSymbol(implementation);
+                            var implementation = namedType.FindImplementationForInterfaceMember(propertySymbol);
+                            if (implementation is not null)
+                            {
+                                addSymbol(namedType);
+                                addSymbol(implementation);
+                            }
                         }
                     }
                 }
 
                 if (origin is INamedTypeSymbol namedTypeSymbol)
                 {
-                    foreach (var candidate in EnumerateNamedTypes())
+                    if (_derivedTypesByBase.TryGetValue(namedTypeSymbol, out var derivedTypes))
                     {
-                        if (SymbolEqualityComparer.Default.Equals(candidate.BaseType, namedTypeSymbol))
+                        foreach (var candidate in derivedTypes)
                         {
                             addSymbol(candidate);
                         }
+                    }
 
-                        if (namedTypeSymbol.TypeKind == TypeKind.Interface)
+                    if (namedTypeSymbol.TypeKind == TypeKind.Interface &&
+                        _implementationsByInterface.TryGetValue(namedTypeSymbol, out var implementations))
+                    {
+                        foreach (var candidate in implementations)
                         {
-                            foreach (var iface in candidate.AllInterfaces)
-                            {
-                                if (SymbolEqualityComparer.Default.Equals(iface, namedTypeSymbol))
-                                {
-                                    addSymbol(candidate);
-                                    break;
-                                }
-                            }
+                            addSymbol(candidate);
                         }
                     }
 
@@ -452,6 +467,8 @@ namespace Selectorlyzer.FlowBuilder
 
             private void ExpandMediatorAndMessagingRelations(INamedTypeSymbol typeSymbol, Action<ISymbol?> addSymbol)
             {
+                BuildTypeRelationMaps();
+
                 var isRequest = typeSymbol.AllInterfaces.Any(i => string.Equals(i.Name, "IRequest", StringComparison.Ordinal));
                 var isNotification = typeSymbol.AllInterfaces.Any(i => string.Equals(i.Name, "INotification", StringComparison.Ordinal));
 
@@ -460,54 +477,19 @@ namespace Selectorlyzer.FlowBuilder
                     return;
                 }
 
-                foreach (var candidate in EnumerateNamedTypes())
+                if (isRequest && _mediatorRequestHandlers.TryGetValue(typeSymbol, out var requestHandlers))
                 {
-                    foreach (var iface in candidate.AllInterfaces)
+                    foreach (var handler in requestHandlers)
                     {
-                        if (iface.TypeArguments.Length == 0)
-                        {
-                            continue;
-                        }
-
-                        var requestType = UnwrapNullable(iface.TypeArguments[0]);
-                        if (!SymbolEqualityComparer.Default.Equals(requestType, typeSymbol))
-                        {
-                            continue;
-                        }
-
-                        if (string.Equals(iface.Name, "IRequestHandler", StringComparison.Ordinal) && isRequest)
-                        {
-                            addSymbol(candidate);
-                            continue;
-                        }
-
-                        if (string.Equals(iface.Name, "IRequestProcessor", StringComparison.Ordinal) && isRequest)
-                        {
-                            addSymbol(candidate);
-                            continue;
-                        }
-
-                        if (string.Equals(iface.Name, "IPipelineBehavior", StringComparison.Ordinal) && isRequest)
-                        {
-                            addSymbol(candidate);
-                            continue;
-                        }
-
-                        if (string.Equals(iface.Name, "INotificationHandler", StringComparison.Ordinal) && isNotification)
-                        {
-                            addSymbol(candidate);
-                        }
+                        addSymbol(handler);
                     }
                 }
-            }
 
-            private IEnumerable<INamedTypeSymbol> EnumerateNamedTypes()
-            {
-                foreach (var symbol in _symbolToId.Keys)
+                if (isNotification && _mediatorNotificationHandlers.TryGetValue(typeSymbol, out var notificationHandlers))
                 {
-                    if (symbol is INamedTypeSymbol namedType)
+                    foreach (var handler in notificationHandlers)
                     {
-                        yield return namedType;
+                        addSymbol(handler);
                     }
                 }
             }
@@ -520,6 +502,133 @@ namespace Selectorlyzer.FlowBuilder
                 }
 
                 return typeSymbol;
+            }
+
+            private void BuildTypeRelationMaps()
+            {
+                if (_typeRelationsBuilt)
+                {
+                    return;
+                }
+
+                var derived = new Dictionary<INamedTypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
+                var implementations = new Dictionary<INamedTypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
+                var requestHandlers = new Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
+                var notificationHandlers = new Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>>(SymbolEqualityComparer.Default);
+
+                foreach (var namedType in EnumerateCompilationNamedTypes(_compilation))
+                {
+                    if (!namedType.Locations.Any(l => l.IsInSource))
+                    {
+                        continue;
+                    }
+
+                    if (namedType.BaseType is INamedTypeSymbol baseType)
+                    {
+                        AddRelation(derived, baseType, namedType);
+                    }
+
+                    foreach (var iface in namedType.AllInterfaces)
+                    {
+                        if (iface is not INamedTypeSymbol interfaceType)
+                        {
+                            continue;
+                        }
+
+                        AddRelation(implementations, interfaceType, namedType);
+
+                        if (iface.TypeArguments.Length == 0)
+                        {
+                            continue;
+                        }
+
+                        var messageType = UnwrapNullable(iface.TypeArguments[0]);
+                        if (messageType is null)
+                        {
+                            continue;
+                        }
+
+                        if (string.Equals(iface.Name, "IRequestHandler", StringComparison.Ordinal) ||
+                            string.Equals(iface.Name, "IRequestProcessor", StringComparison.Ordinal) ||
+                            string.Equals(iface.Name, "IPipelineBehavior", StringComparison.Ordinal))
+                        {
+                            AddRelation(requestHandlers, messageType, namedType);
+                        }
+                        else if (string.Equals(iface.Name, "INotificationHandler", StringComparison.Ordinal))
+                        {
+                            AddRelation(notificationHandlers, messageType, namedType);
+                        }
+                    }
+                }
+
+                PopulateImmutableMap(_derivedTypesByBase, derived);
+                PopulateImmutableMap(_implementationsByInterface, implementations);
+                PopulateImmutableMap(_mediatorRequestHandlers, requestHandlers);
+                PopulateImmutableMap(_mediatorNotificationHandlers, notificationHandlers);
+
+                _typeRelationsBuilt = true;
+            }
+
+            private void ResetTypeRelationMaps()
+            {
+                _derivedTypesByBase.Clear();
+                _implementationsByInterface.Clear();
+                _mediatorRequestHandlers.Clear();
+                _mediatorNotificationHandlers.Clear();
+                _typeRelationsBuilt = false;
+            }
+
+            private static void AddRelation<TKey>(Dictionary<TKey, HashSet<INamedTypeSymbol>> map, TKey key, INamedTypeSymbol value)
+                where TKey : notnull
+            {
+                if (!map.TryGetValue(key, out var set))
+                {
+                    set = new HashSet<INamedTypeSymbol>(SymbolEqualityComparer.Default);
+                    map[key] = set;
+                }
+
+                set.Add(value);
+            }
+
+            private static void PopulateImmutableMap<TKey>(Dictionary<TKey, ImmutableArray<INamedTypeSymbol>> target, Dictionary<TKey, HashSet<INamedTypeSymbol>> source)
+                where TKey : notnull
+            {
+                foreach (var (key, values) in source)
+                {
+                    target[key] = values
+                        .OrderBy(v => v.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat), StringComparer.Ordinal)
+                        .ToImmutableArray();
+                }
+            }
+
+            private static IEnumerable<INamedTypeSymbol> EnumerateCompilationNamedTypes(Compilation compilation)
+            {
+                var stack = new Stack<INamespaceOrTypeSymbol>();
+                stack.Push(compilation.GlobalNamespace);
+
+                while (stack.Count > 0)
+                {
+                    var current = stack.Pop();
+                    if (current is INamespaceSymbol namespaceSymbol)
+                    {
+                        foreach (var member in namespaceSymbol.GetMembers())
+                        {
+                            if (member is INamespaceOrTypeSymbol namespaceOrType)
+                            {
+                                stack.Push(namespaceOrType);
+                            }
+                        }
+                    }
+                    else if (current is INamedTypeSymbol namedType)
+                    {
+                        yield return namedType;
+
+                        foreach (var nested in namedType.GetTypeMembers())
+                        {
+                            stack.Push(nested);
+                        }
+                    }
+                }
             }
 
             private FlowEdge CreateEdge(NodeBuilder from, NodeBuilder to)
