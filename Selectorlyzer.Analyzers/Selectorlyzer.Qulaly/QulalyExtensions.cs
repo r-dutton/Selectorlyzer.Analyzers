@@ -24,7 +24,9 @@ namespace Selectorlyzer.Qulaly
 
         public static IEnumerable<SyntaxNode> QuerySelectorAll(this SyntaxNode node, QulalySelector selector, Compilation? compilation = default, SelectorQueryContext? queryContext = null)
         {
-            var effectiveCompilation = compilation ?? queryContext?.Compilation;
+            var effectiveCompilation = EnsureCompilationContainsTree(
+                compilation ?? queryContext?.Compilation,
+                node.SyntaxTree);
             var semanticModel = effectiveCompilation?.GetSemanticModel(node.SyntaxTree);
             var context = (queryContext ?? SelectorQueryContext.Empty).WithCompilation(effectiveCompilation);
             return EnumerableMatcher.GetEnumerable(node, selector, semanticModel, context);
@@ -47,7 +49,9 @@ namespace Selectorlyzer.Qulaly
 
         public static IEnumerable<SelectorMatch> QueryMatches(this SyntaxNode node, QulalySelector selector, Compilation? compilation = default, SelectorQueryContext? queryContext = null)
         {
-            var effectiveCompilation = compilation ?? queryContext?.Compilation;
+            var effectiveCompilation = EnsureCompilationContainsTree(
+                compilation ?? queryContext?.Compilation,
+                node.SyntaxTree);
             var semanticModel = effectiveCompilation?.GetSemanticModel(node.SyntaxTree);
             var context = (queryContext ?? SelectorQueryContext.Empty).WithCompilation(effectiveCompilation);
             return EnumerableMatcher.GetMatches(node, selector, semanticModel, context);
@@ -70,10 +74,24 @@ namespace Selectorlyzer.Qulaly
 
         public static SyntaxNode? QuerySelector(this SyntaxNode node, QulalySelector selector, Compilation? compilation = default, SelectorQueryContext? queryContext = null)
         {
-            var effectiveCompilation = compilation ?? queryContext?.Compilation;
+            var effectiveCompilation = EnsureCompilationContainsTree(
+                compilation ?? queryContext?.Compilation,
+                node.SyntaxTree);
             var semanticModel = effectiveCompilation?.GetSemanticModel(node.SyntaxTree);
             var context = (queryContext ?? SelectorQueryContext.Empty).WithCompilation(effectiveCompilation);
             return EnumerableMatcher.GetEnumerable(node, selector, semanticModel, context).FirstOrDefault();
+        }
+
+        private static Compilation? EnsureCompilationContainsTree(Compilation? compilation, SyntaxTree? syntaxTree)
+        {
+            if (compilation is null || syntaxTree is null)
+            {
+                return compilation;
+            }
+
+            return compilation.SyntaxTrees.Contains(syntaxTree)
+                ? compilation
+                : compilation.AddSyntaxTrees(syntaxTree);
         }
     }
 }
