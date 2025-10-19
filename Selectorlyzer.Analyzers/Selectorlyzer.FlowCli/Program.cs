@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
@@ -35,6 +36,7 @@ public static class Program
         var explicitSolutions = new List<string>();
         var flowPatterns = new List<string>();
         int? maxDepth = null;
+        int concurrency = Math.Max(1, Environment.ProcessorCount);
 
         for (int i = 0; i < argsList.Count; i++)
         {
@@ -71,6 +73,12 @@ public static class Program
                         maxDepth = depth;
                     }
                     break;
+                case "--concurrency":
+                    if (i + 1 < argsList.Count && int.TryParse(argsList[++i], out var parsedConcurrency) && parsedConcurrency > 0)
+                    {
+                        concurrency = parsedConcurrency;
+                    }
+                    break;
             }
         }
 
@@ -90,23 +98,34 @@ public static class Program
             return 0;
         }
 
-        var graphs = new List<FlowGraph>();
         var builder = new SelectorFlowBuilder();
+        var composer = new FlowGraphComposer(workspaceDefinition);
+        var composition = composer.CreateComposition();
+        int graphCount = 0;
 
         foreach (var solutionPath in solutionPaths)
         {
             Console.WriteLine($"[flow] Loading solution {solutionPath}");
             using var msbuildWorkspace = MSBuildWorkspace.Create();
             var solution = await msbuildWorkspace.OpenSolutionAsync(solutionPath);
-            foreach (var project in solution.Projects.Where(p => string.Equals(p.Language, LanguageNames.CSharp, StringComparison.OrdinalIgnoreCase)))
+            var csharpProjects = solution.Projects
+                .Where(p => string.Equals(p.Language, LanguageNames.CSharp, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var parallelOptions = new ParallelOptions
             {
-                var compilation = await project.GetCompilationAsync();
+                MaxDegreeOfParallelism = Math.Max(1, concurrency)
+            };
+
+            await Parallel.ForEachAsync(csharpProjects, parallelOptions, async (project, cancellationToken) =>
+            {
+                Console.WriteLine($"[flow] Analyzing project {project.Name}");
+                var compilation = await project.GetCompilationAsync(cancellationToken);
                 if (compilation is null)
                 {
-                    continue;
+                    return;
                 }
 
-                Console.WriteLine($"[flow] Analyzing project {project.Name}");
                 var metadata = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["project"] = project.Name,
@@ -115,18 +134,23 @@ public static class Program
                 };
                 var baseContext = new SelectorQueryContext(metadata: metadata);
                 var graph = builder.Build(compilation, baseContext);
-                graphs.Add(graph);
-            }
+                if (graph.Nodes.Length == 0 && graph.Edges.Length == 0)
+                {
+                    return;
+                }
+
+                composition.AddGraph(graph);
+                Interlocked.Increment(ref graphCount);
+            });
         }
 
-        if (graphs.Count == 0)
+        if (graphCount == 0)
         {
             Console.WriteLine("No compilations produced any graph data.");
             return 0;
         }
 
-        var composer = new FlowGraphComposer(workspaceDefinition);
-        var combined = composer.Compose(graphs);
+        var combined = composition.Build();
 
         RenderFlows(combined, flowPatterns, maxDepth);
         return 0;

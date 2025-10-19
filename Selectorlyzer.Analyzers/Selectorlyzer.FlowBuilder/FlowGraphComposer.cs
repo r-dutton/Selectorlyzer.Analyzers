@@ -8,61 +8,30 @@ namespace Selectorlyzer.FlowBuilder;
 public sealed class FlowGraphComposer
 {
     private readonly FlowWorkspaceDefinition _workspace;
+    private readonly IReadOnlyDictionary<string, FlowServiceDefinition> _servicesByAssembly;
+    private readonly IReadOnlyDictionary<string, FlowServiceDefinition> _serviceByBaseUrl;
+    private readonly IReadOnlyDictionary<string, List<FlowServiceBinding>> _bindingsByClient;
 
     public FlowGraphComposer(FlowWorkspaceDefinition workspace)
     {
         _workspace = workspace ?? throw new ArgumentNullException(nameof(workspace));
+        _servicesByAssembly = BuildServicesByAssembly(workspace.Services);
+        _serviceByBaseUrl = BuildServiceByBaseUrl(workspace.Services);
+        _bindingsByClient = BuildBindingsByClient(workspace.Bindings);
     }
 
     public FlowGraph Compose(IEnumerable<FlowGraph?> graphs)
     {
-        var accumulators = new Dictionary<string, NodeAccumulator>(StringComparer.Ordinal);
-        var edges = new List<FlowEdge>();
-        var edgeKeys = new HashSet<(string From, string To, string Kind)>();
-
+        var composition = CreateComposition();
         foreach (var graph in graphs ?? Enumerable.Empty<FlowGraph?>())
         {
-            if (graph is null)
-            {
-                continue;
-            }
-
-            foreach (var node in graph.Nodes)
-            {
-                if (!accumulators.TryGetValue(node.Id, out var accumulator))
-                {
-                    accumulator = new NodeAccumulator(node);
-                    accumulators[node.Id] = accumulator;
-                }
-                else
-                {
-                    accumulator.Merge(node);
-                }
-            }
-
-            foreach (var edge in graph.Edges)
-            {
-                if (edgeKeys.Add((edge.From, edge.To, edge.Kind)))
-                {
-                    edges.Add(edge);
-                }
-            }
+            composition.AddGraph(graph);
         }
 
-        var mergedNodes = accumulators.Values
-            .Select(a => a.ToNode())
-            .OrderBy(n => n.Fqdn, StringComparer.Ordinal)
-            .ToImmutableArray();
-
-        var mergedEdges = edges
-            .OrderBy(e => e.From, StringComparer.Ordinal)
-            .ThenBy(e => e.To, StringComparer.Ordinal)
-            .ThenBy(e => e.Kind, StringComparer.Ordinal)
-            .ToImmutableArray();
-
-        var mergedGraph = new FlowGraph(mergedNodes, mergedEdges);
-        return AugmentRemoteEdges(mergedGraph);
+        return composition.Build();
     }
+
+    public Composition CreateComposition() => new(this);
 
     private FlowGraph AugmentRemoteEdges(FlowGraph graph)
     {
@@ -84,39 +53,6 @@ public sealed class FlowGraphComposer
         }
 
         var servicesByName = _workspace.Services;
-        var servicesByAssembly = new Dictionary<string, FlowServiceDefinition>(StringComparer.OrdinalIgnoreCase);
-        foreach (var service in servicesByName.Values)
-        {
-            foreach (var assembly in service.AssemblyNames)
-            {
-                if (!servicesByAssembly.ContainsKey(assembly))
-                {
-                    servicesByAssembly[assembly] = service;
-                }
-            }
-        }
-
-        var serviceByBaseUrl = new Dictionary<string, FlowServiceDefinition>(StringComparer.OrdinalIgnoreCase);
-        foreach (var service in servicesByName.Values)
-        {
-            foreach (var baseAddress in service.BaseAddresses.Values)
-            {
-                if (string.IsNullOrWhiteSpace(baseAddress))
-                {
-                    continue;
-                }
-
-                var normalized = NormalizeUrl(baseAddress);
-                if (!serviceByBaseUrl.ContainsKey(normalized))
-                {
-                    serviceByBaseUrl[normalized] = service;
-                }
-            }
-        }
-
-        var bindingsByClient = _workspace.Bindings
-            .GroupBy(b => b.Client, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var call in httpCalls)
         {
@@ -129,7 +65,7 @@ public sealed class FlowGraphComposer
 
             var targetServices = new List<FlowServiceDefinition>();
 
-            if (!string.IsNullOrWhiteSpace(clientType) && bindingsByClient.TryGetValue(clientType!, out var clientBindings))
+            if (!string.IsNullOrWhiteSpace(clientType) && _bindingsByClient.TryGetValue(clientType!, out var clientBindings))
             {
                 foreach (var binding in clientBindings)
                 {
@@ -140,7 +76,7 @@ public sealed class FlowGraphComposer
                 }
             }
 
-            if (targetServices.Count == 0 && !string.IsNullOrWhiteSpace(callerType) && bindingsByClient.TryGetValue(callerType!, out var callerBindings))
+            if (targetServices.Count == 0 && !string.IsNullOrWhiteSpace(callerType) && _bindingsByClient.TryGetValue(callerType!, out var callerBindings))
             {
                 foreach (var binding in callerBindings)
                 {
@@ -154,13 +90,13 @@ public sealed class FlowGraphComposer
             if (targetServices.Count == 0 && !string.IsNullOrWhiteSpace(baseUrl))
             {
                 var normalized = NormalizeUrl(baseUrl!);
-                if (serviceByBaseUrl.TryGetValue(normalized, out var service))
+                if (_serviceByBaseUrl.TryGetValue(normalized, out var service))
                 {
                     targetServices.Add(service);
                 }
             }
 
-            if (targetServices.Count == 0 && !string.IsNullOrWhiteSpace(call.Assembly) && servicesByAssembly.TryGetValue(call.Assembly!, out var assemblyService))
+            if (targetServices.Count == 0 && !string.IsNullOrWhiteSpace(call.Assembly) && _servicesByAssembly.TryGetValue(call.Assembly!, out var assemblyService))
             {
                 targetServices.Add(assemblyService);
             }
@@ -199,6 +135,66 @@ public sealed class FlowGraphComposer
             .ToImmutableArray();
 
         return new FlowGraph(augmentedNodes, augmentedEdges);
+    }
+
+    private static IReadOnlyDictionary<string, FlowServiceDefinition> BuildServicesByAssembly(
+        IReadOnlyDictionary<string, FlowServiceDefinition> services)
+    {
+        var dictionary = new Dictionary<string, FlowServiceDefinition>(StringComparer.OrdinalIgnoreCase);
+        foreach (var service in services.Values)
+        {
+            foreach (var assembly in service.AssemblyNames)
+            {
+                if (!dictionary.ContainsKey(assembly))
+                {
+                    dictionary[assembly] = service;
+                }
+            }
+        }
+
+        return dictionary;
+    }
+
+    private static IReadOnlyDictionary<string, FlowServiceDefinition> BuildServiceByBaseUrl(
+        IReadOnlyDictionary<string, FlowServiceDefinition> services)
+    {
+        var dictionary = new Dictionary<string, FlowServiceDefinition>(StringComparer.OrdinalIgnoreCase);
+        foreach (var service in services.Values)
+        {
+            foreach (var baseAddress in service.BaseAddresses.Values)
+            {
+                if (string.IsNullOrWhiteSpace(baseAddress))
+                {
+                    continue;
+                }
+
+                var normalized = NormalizeUrl(baseAddress);
+                if (!dictionary.ContainsKey(normalized))
+                {
+                    dictionary[normalized] = service;
+                }
+            }
+        }
+
+        return dictionary;
+    }
+
+    private static IReadOnlyDictionary<string, List<FlowServiceBinding>> BuildBindingsByClient(
+        IReadOnlyCollection<FlowServiceBinding> bindings)
+    {
+        var dictionary = new Dictionary<string, List<FlowServiceBinding>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var binding in bindings)
+        {
+            if (!dictionary.TryGetValue(binding.Client, out var list))
+            {
+                list = new List<FlowServiceBinding>();
+                dictionary[binding.Client] = list;
+            }
+
+            list.Add(binding);
+        }
+
+        return dictionary;
     }
 
     private static IReadOnlyList<FlowNode> FilterActionsByRouteAndVerb(
@@ -313,6 +309,78 @@ public sealed class FlowGraphComposer
         }
 
         return trimmed;
+    }
+
+    public sealed class Composition
+    {
+        private readonly FlowGraphComposer _composer;
+        private readonly Dictionary<string, NodeAccumulator> _accumulators = new(StringComparer.Ordinal);
+        private readonly List<FlowEdge> _edges = new();
+        private readonly HashSet<(string From, string To, string Kind)> _edgeKeys = new();
+        private readonly object _sync = new();
+
+        internal Composition(FlowGraphComposer composer)
+        {
+            _composer = composer;
+        }
+
+        public void AddGraph(FlowGraph? graph)
+        {
+            if (graph is null)
+            {
+                return;
+            }
+
+            lock (_sync)
+            {
+                foreach (var node in graph.Nodes)
+                {
+                    if (!_accumulators.TryGetValue(node.Id, out var accumulator))
+                    {
+                        accumulator = new NodeAccumulator(node);
+                        _accumulators[node.Id] = accumulator;
+                    }
+                    else
+                    {
+                        accumulator.Merge(node);
+                    }
+                }
+
+                foreach (var edge in graph.Edges)
+                {
+                    if (_edgeKeys.Add((edge.From, edge.To, edge.Kind)))
+                    {
+                        _edges.Add(edge);
+                    }
+                }
+            }
+        }
+
+        public FlowGraph Build()
+        {
+            NodeAccumulator[] accumulators;
+            FlowEdge[] edges;
+
+            lock (_sync)
+            {
+                accumulators = _accumulators.Values.ToArray();
+                edges = _edges.ToArray();
+            }
+
+            var mergedNodes = accumulators
+                .Select(a => a.ToNode())
+                .OrderBy(n => n.Fqdn, StringComparer.Ordinal)
+                .ToImmutableArray();
+
+            var mergedEdges = edges
+                .OrderBy(e => e.From, StringComparer.Ordinal)
+                .ThenBy(e => e.To, StringComparer.Ordinal)
+                .ThenBy(e => e.Kind, StringComparer.Ordinal)
+                .ToImmutableArray();
+
+            var mergedGraph = new FlowGraph(mergedNodes, mergedEdges);
+            return _composer.AugmentRemoteEdges(mergedGraph);
+        }
     }
 
     private sealed class NodeAccumulator
