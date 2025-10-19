@@ -101,9 +101,29 @@ public sealed class FlowGraphComposer
                 targetServices.Add(assemblyService);
             }
 
-            var candidateActions = targetServices.Count == 0
+            HashSet<string>? targetAssemblies = null;
+            if (targetServices.Count > 0)
+            {
+                targetAssemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var service in targetServices)
+                {
+                    foreach (var assembly in service.AssemblyNames)
+                    {
+                        if (!string.IsNullOrWhiteSpace(assembly))
+                        {
+                            targetAssemblies.Add(assembly);
+                        }
+                    }
+                }
+            }
+
+            var candidateActions = targetAssemblies is null
                 ? actions
-                : actions.Where(a => targetServices.Any(service => service.AssemblyNames.Contains(a.Assembly ?? string.Empty, StringComparer.OrdinalIgnoreCase))).ToList();
+                : actions.Where(a =>
+                {
+                    var assembly = a.Assembly;
+                    return !string.IsNullOrWhiteSpace(assembly) && targetAssemblies.Contains(assembly);
+                }).ToList();
 
             if (candidateActions.Count == 0)
             {
