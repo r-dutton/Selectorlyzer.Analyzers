@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using FluentAssertions;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Selectorlyzer.FlowBuilder;
 using Selectorlyzer.TestUtilities;
 using Xunit;
@@ -81,6 +83,40 @@ namespace Selectorlyzer.FlowBuilder.Tests
             node.Properties.Should().NotBeNull();
             node.Properties!.Should().ContainKey("flow_id");
             node.Properties!["flow_id"]?.ToString().Should().Be("DemoService");
+        }
+
+        [Fact]
+        public void Build_AddsMissingSyntaxTreesBeforeAnalyzingSymbols()
+        {
+            var primaryTree = CSharpSyntaxTree.ParseText("namespace Sample { class Entry { } }");
+            var externalTree = CSharpSyntaxTree.ParseText("namespace External { public class Extra { } }");
+            var references = new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) };
+
+            var compilation = CSharpCompilation.Create("Primary", new[] { primaryTree }, references);
+            var externalCompilation = CSharpCompilation.Create("External", new[] { externalTree }, references);
+            var extraSymbol = externalCompilation.GetTypeByMetadataName("External.Extra")!;
+
+            var selectorNodeRuleType = typeof(SelectorFlowBuilder).Assembly.GetType("Selectorlyzer.FlowBuilder.SelectorNodeRule", throwOnError: true)!;
+            var createMethod = selectorNodeRuleType.GetMethod("Create", BindingFlags.Public | BindingFlags.Static)!;
+            var rule = createMethod.Invoke(null, new object?[] { "external.type", ":class", null, true, null });
+            var rules = Array.CreateInstance(selectorNodeRuleType, 1);
+            rules.SetValue(rule, 0);
+
+            var builder = (SelectorFlowBuilder)Activator.CreateInstance(
+                typeof(SelectorFlowBuilder),
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                binder: null,
+                args: new object?[] { rules },
+                culture: null)!;
+
+            var queryContext = new SelectorQueryContext(
+                compilation: null,
+                metadata: null,
+                symbolResolver: (_, _) => extraSymbol);
+
+            var graph = builder.Build(compilation, queryContext);
+
+            graph.Nodes.Should().Contain(node => node.Fqdn == "External.Extra");
         }
 
         private static IReadOnlyList<FlowNode> CollectReachable(FlowGraph graph, string startId)

@@ -38,8 +38,8 @@ namespace Selectorlyzer.FlowBuilder
 
         private sealed class NodeRegistry
         {
-            private readonly Compilation _compilation;
-            private readonly SelectorQueryContext _baseContext;
+            private Compilation _compilation;
+            private SelectorQueryContext _baseContext;
             private readonly IReadOnlyList<SelectorNodeRule> _rules;
             private readonly Dictionary<string, NodeBuilder> _nodes = new(StringComparer.Ordinal);
             private readonly Dictionary<ISymbol, string> _symbolToId = new(SymbolEqualityComparer.Default);
@@ -143,6 +143,29 @@ namespace Selectorlyzer.FlowBuilder
                 return new FlowGraph(orderedNodes, orderedEdges);
             }
 
+            private Compilation EnsureCompilationContainsTree(SyntaxTree syntaxTree)
+            {
+                if (_compilation.SyntaxTrees.Contains(syntaxTree))
+                {
+                    return _compilation;
+                }
+
+                var updatedCompilation = _compilation.AddSyntaxTrees(syntaxTree);
+                UpdateCompilation(updatedCompilation);
+                return updatedCompilation;
+            }
+
+            private void UpdateCompilation(Compilation compilation)
+            {
+                if (ReferenceEquals(_compilation, compilation))
+                {
+                    return;
+                }
+
+                _compilation = compilation;
+                _baseContext = _baseContext.WithCompilation(compilation);
+            }
+
             private NodeBuilder? GetOrCreateBuilder(ISymbol? symbol, SyntaxNode? fallbackNode)
             {
                 if (symbol is not null)
@@ -190,7 +213,8 @@ namespace Selectorlyzer.FlowBuilder
                 foreach (var syntaxReference in builder.Symbol.DeclaringSyntaxReferences)
                 {
                     var syntax = syntaxReference.GetSyntax();
-                    var semanticModel = _compilation.GetSemanticModel(syntax.SyntaxTree);
+                    var compilation = EnsureCompilationContainsTree(syntax.SyntaxTree);
+                    var semanticModel = compilation.GetSemanticModel(syntax.SyntaxTree);
                     var context = new SelectorMatcherContext(syntax, semanticModel, _baseContext, syntax, syntax);
                     var match = new SelectorMatch(syntax, context);
                     foreach (var rule in _rules)
@@ -263,7 +287,8 @@ namespace Selectorlyzer.FlowBuilder
                 foreach (var syntaxReference in symbol.DeclaringSyntaxReferences)
                 {
                     var syntax = syntaxReference.GetSyntax();
-                    var semanticModel = _compilation.GetSemanticModel(syntax.SyntaxTree);
+                    var compilation = EnsureCompilationContainsTree(syntax.SyntaxTree);
+                    var semanticModel = compilation.GetSemanticModel(syntax.SyntaxTree);
                     CollectSymbolsFromNode(syntax, semanticModel, addSymbol);
                 }
             }
