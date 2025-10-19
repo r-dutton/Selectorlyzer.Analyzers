@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
@@ -46,11 +48,61 @@ namespace Selectorlyzer.Qulaly.Matcher
             }
         }
 
+        public static void ForEachMatch(
+            SyntaxNode node,
+            IReadOnlyList<QulalySelector> selectors,
+            SemanticModel? semanticModel,
+            SelectorQueryContext? queryContext,
+            Func<SyntaxNode, IReadOnlyList<int>> selectorProvider,
+            Action<int, SelectorMatch> onMatch)
+        {
+            if (node is null)
+            {
+                throw new ArgumentNullException(nameof(node));
+            }
+
+            if (selectors is null)
+            {
+                throw new ArgumentNullException(nameof(selectors));
+            }
+
+            if (selectorProvider is null)
+            {
+                throw new ArgumentNullException(nameof(selectorProvider));
+            }
+
+            if (onMatch is null)
+            {
+                throw new ArgumentNullException(nameof(onMatch));
+            }
+
+            if (selectors.Count == 0)
+            {
+                return;
+            }
+
+            var root = node.SyntaxTree?.GetRoot() ?? node;
+            var context = new SelectorMatcherContext(node, semanticModel, queryContext, scope: node, root: root);
+            EnumerateBatch(selectors, selectorProvider, onMatch, context);
+        }
+
+        internal static ImmutableArray<SyntaxKind> GetTopLevelSyntaxKinds(QulalySelector selector)
+        {
+            if (selector is null)
+            {
+                throw new ArgumentNullException(nameof(selector));
+            }
+
+            var kinds = new HashSet<SyntaxKind>();
+            TryResolveTopLevelSyntaxKinds(selector.Selector, kinds);
+            return kinds.Count == 0 ? ImmutableArray<SyntaxKind>.Empty : kinds.ToImmutableArray();
+        }
+
         private static IEnumerable<SelectorMatcherContext> Enumerate(QulalySelector selector, SelectorMatcherContext context)
         {
-            var targetedKinds = ResolveTopLevelSyntaxKinds(selector.Selector);
+            var targetedKinds = GetTopLevelSyntaxKinds(selector);
             // Only prune yielding the current node, not recursion into children
-            if (targetedKinds != null && targetedKinds.Count > 0 && !targetedKinds.Contains(context.Node.Kind()))
+            if (!targetedKinds.IsDefaultOrEmpty && !Contains(targetedKinds, context.Node.Kind()))
             {
                 // Don't yield this node, but still recurse into children
             }
@@ -72,12 +124,35 @@ namespace Selectorlyzer.Qulaly.Matcher
             }
         }
 
-        private static HashSet<SyntaxKind>? ResolveTopLevelSyntaxKinds(object selector)
+        private static void EnumerateBatch(
+            IReadOnlyList<QulalySelector> selectors,
+            Func<SyntaxNode, IReadOnlyList<int>> selectorProvider,
+            Action<int, SelectorMatch> onMatch,
+            SelectorMatcherContext context)
         {
-            var kinds = new HashSet<SyntaxKind>();
-            if (selector == null) return null;
-            TryResolveTopLevelSyntaxKinds(selector, kinds);
-            return kinds.Count > 0 ? kinds : null;
+            var candidates = selectorProvider(context.Node);
+            if (candidates != null)
+            {
+                foreach (var index in candidates)
+                {
+                    if ((uint)index >= (uint)selectors.Count)
+                    {
+                        continue;
+                    }
+
+                    var selector = selectors[index];
+                    if (selector.Matcher(context))
+                    {
+                        onMatch(index, new SelectorMatch(context.Node, context));
+                    }
+                }
+            }
+
+            foreach (var child in context.Node.ChildNodes())
+            {
+                var childContext = context.WithSyntaxNode(child);
+                EnumerateBatch(selectors, selectorProvider, onMatch, childContext);
+            }
         }
 
         private static bool TryResolveTopLevelSyntaxKinds(object selector, ISet<SyntaxKind> kinds)
@@ -151,6 +226,19 @@ namespace Selectorlyzer.Qulaly.Matcher
                     return true;
                 }
             }
+            return false;
+        }
+
+        private static bool Contains(ImmutableArray<SyntaxKind> kinds, SyntaxKind kind)
+        {
+            foreach (var candidate in kinds)
+            {
+                if (candidate == kind)
+                {
+                    return true;
+                }
+            }
+
             return false;
         }
     }
