@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Reflection;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -248,15 +247,13 @@ namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
             }
             else
             {
-                var property = GetProperty(type, memberName, bindingFlags);
-                if (property != null)
+                if (type.GetProperty(memberName, bindingFlags) is { } property)
                 {
                     value = property.GetValue(target);
                     return true;
                 }
 
-                var field = GetField(type, memberName, bindingFlags);
-                if (field != null)
+                if (type.GetField(memberName, bindingFlags) is { } field)
                 {
                     value = field.GetValue(target);
                     return true;
@@ -265,18 +262,6 @@ namespace Selectorlyzer.Qulaly.Matcher.Selectors.Properties
 
             value = null;
             return false;
-        }
-
-        private static PropertyInfo? GetProperty(Type type, string memberName, BindingFlags bindingFlags)
-        {
-            var comparison = bindingFlags.HasFlag(BindingFlags.IgnoreCase) ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-            return type.GetProperties(bindingFlags).FirstOrDefault(p => string.Equals(p.Name, memberName, comparison));
-        }
-
-        private static FieldInfo? GetField(Type type, string memberName, BindingFlags bindingFlags)
-        {
-            var comparison = bindingFlags.HasFlag(BindingFlags.IgnoreCase) ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-            return type.GetFields(bindingFlags).FirstOrDefault(f => string.Equals(f.Name, memberName, comparison));
         }
 
         private static bool TryResolveFromEnumerable(object current, string segment, out object? value)
