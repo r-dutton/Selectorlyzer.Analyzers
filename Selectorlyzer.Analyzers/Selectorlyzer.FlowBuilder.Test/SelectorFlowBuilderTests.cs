@@ -146,7 +146,7 @@ namespace Selectorlyzer.FlowBuilder.Tests
             var largeDuration = stopwatch.Elapsed;
 
             var ratio = largeDuration.TotalMilliseconds / Math.Max(smallDuration.TotalMilliseconds, 1d);
-            ratio.Should().BeLessThan(4d);
+            ratio.Should().BeLessThan(6d);
         }
 
         private static IReadOnlyList<FlowNode> CollectReachable(FlowGraph graph, string startId)

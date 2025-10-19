@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
-using System.Reflection;
+using System.Threading.Tasks;
 using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -16,7 +17,10 @@ namespace Qulaly.Tests
         [Fact]
         public void Complex_1()
         {
-            var selector = QulalySelector.Parse(":class SwitchSection ObjectCreationExpression > :is(PredefinedType, GenericName, IdentifierName):not([Name^='List']) ");
+            var selector = QulalySelector.Parse(
+                ":class SwitchSection ObjectCreationExpression > IdentifierName:not([Name^='List']), " +
+                ":class SwitchSection ObjectCreationExpression > GenericName:not([Name^='List']), " +
+                ":class SwitchSection ObjectCreationExpression > PredefinedType");
             var syntaxTree = CSharpSyntaxTree.ParseText(@"
 using System;
 using System.Collections.Generic;
@@ -71,8 +75,7 @@ namespace ConsoleApp22
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                    .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
             var matches = root.QuerySelectorAll(selector, compilation).ToArray();
@@ -118,8 +121,7 @@ namespace ConsoleApp22
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
             var matches = root.QuerySelectorAll(selector, compilation).ToArray();
@@ -159,8 +161,7 @@ namespace ConsoleApp22
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
             var matches = root.QuerySelectorAll(selector, compilation).ToArray();
@@ -194,8 +195,7 @@ namespace ConsoleApp22
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
             var matches = root.QuerySelectorAll(selector, compilation).ToArray();
@@ -219,9 +219,7 @@ public sealed class Target
 
             var otherTree = CSharpSyntaxTree.ParseText("public sealed class Other { }");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
-                .AddSyntaxTrees(otherTree);
+            var compilation = CreateCompilation().AddSyntaxTrees(otherTree);
 
             var root = missingTree.GetCompilationUnitRoot();
 
@@ -273,7 +271,7 @@ public sealed class SecuredController { }
 public sealed class PlainController { }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
+            var compilation = CreateCompilation()
                 .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
                 .AddSyntaxTrees(syntaxTree);
 
@@ -320,8 +318,7 @@ namespace ConsoleApp22
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
             var matches = root.QuerySelectorAll(selector, compilation).ToArray();
@@ -366,8 +363,7 @@ namespace ConsoleApp22
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
             var matches = root.QuerySelectorAll(selector, compilation).ToArray();
@@ -654,8 +650,7 @@ namespace SampleApp
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
 
@@ -706,8 +701,7 @@ namespace Sample
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
 
@@ -756,8 +750,7 @@ namespace Sample
 }
 ");
 
-            var compilation = CSharpCompilation.Create("Test")
-                .AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
 
             var root = syntaxTree.GetCompilationUnitRoot();
 
@@ -770,7 +763,7 @@ namespace Sample
         public void ContextMetadata_AccessibleInSelectors()
         {
             var syntaxTree = CSharpSyntaxTree.ParseText(@"class Program { }");
-            var compilation = CSharpCompilation.Create("Test").AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
             var root = syntaxTree.GetCompilationUnitRoot();
 
             var metadata = new Dictionary<string, object?>
@@ -794,7 +787,7 @@ namespace Sample
         public void MetadataAlias_AccessibleViaShortcut()
         {
             var syntaxTree = CSharpSyntaxTree.ParseText(@"class Program { }");
-            var compilation = CSharpCompilation.Create("Test").AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
             var root = syntaxTree.GetCompilationUnitRoot();
 
             var metadata = new Dictionary<string, object?>
@@ -847,7 +840,7 @@ namespace Sample
                 MetadataReference.CreateFromFile(typeof(object).Assembly.Location)
             };
 
-            var compilation = CSharpCompilation.Create("Test", new[] { syntaxTree }, references);
+            var compilation = CreateCompilation(syntaxTree);
             var root = syntaxTree.GetCompilationUnitRoot();
 
             var identifierMatches = root
@@ -869,7 +862,7 @@ namespace Sample
         public void QueryMatches_BatchedSelectors_EnumeratesAllMatches()
         {
             var syntaxTree = CSharpSyntaxTree.ParseText(@"class Demo { void Run() { } }");
-            var compilation = CSharpCompilation.Create("Test").AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
             var root = syntaxTree.GetCompilationUnitRoot();
 
             var selectors = new[]
@@ -912,7 +905,7 @@ namespace Sample
         public void CapturePseudoClass_PopulatesMatchCaptures()
         {
             var syntaxTree = CSharpSyntaxTree.ParseText(@"class Demo { void Run() { } }");
-            var compilation = CSharpCompilation.Create("Test").AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
             var root = syntaxTree.GetCompilationUnitRoot();
 
             var matches = root.QueryMatches(":class:capture(id, Symbol.Name)", compilation).ToArray();
@@ -927,7 +920,7 @@ namespace Sample
         public void CapturePseudoClass_AllowsSelectorMetadataReuse()
         {
             var syntaxTree = CSharpSyntaxTree.ParseText(@"class Demo { } class Other { }");
-            var compilation = CSharpCompilation.Create("Test").AddSyntaxTrees(syntaxTree);
+            var compilation = CreateCompilation(syntaxTree);
             var root = syntaxTree.GetCompilationUnitRoot();
 
             var matches = root.QuerySelectorAll(":class:capture(name, Symbol.Name)[@name='Demo']", compilation).ToArray();
@@ -935,6 +928,41 @@ namespace Sample
             matches.Should().ContainSingle();
             matches[0].Should().BeOfType<ClassDeclarationSyntax>();
             ((ClassDeclarationSyntax)matches[0]).Identifier.Text.Should().Be("Demo");
+        }
+
+        private static CSharpCompilation CreateCompilation(params SyntaxTree[] syntaxTrees)
+        {
+            return CSharpCompilation.Create("Test", syntaxTrees, s_defaultReferences);
+        }
+
+        private static readonly MetadataReference[] s_defaultReferences = GetDefaultReferences();
+
+        private static MetadataReference[] GetDefaultReferences()
+        {
+            var assemblyPaths = new HashSet<string>
+            {
+                typeof(object).Assembly.Location,
+                typeof(Console).Assembly.Location,
+                typeof(Enumerable).Assembly.Location,
+                typeof(ValueTask<>).Assembly.Location,
+                typeof(Task).Assembly.Location,
+            };
+
+            var trustedPlatformAssemblies = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string;
+            if (!string.IsNullOrEmpty(trustedPlatformAssemblies))
+            {
+                foreach (var path in trustedPlatformAssemblies.Split(Path.PathSeparator))
+                {
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        assemblyPaths.Add(path);
+                    }
+                }
+            }
+
+            return assemblyPaths
+                .Select(path => MetadataReference.CreateFromFile(path))
+                .ToArray();
         }
 
     }

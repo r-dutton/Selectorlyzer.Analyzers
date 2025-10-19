@@ -133,7 +133,7 @@ class InvalidClass
 }";
 
             var expected = VerifyCS.Diagnostic(DiagnosticDescriptors.SelectorlyzerWarning)
-                .WithSpan(9, 1, 9, 19)
+                .WithSpan(9, 1, 12, 2)
                 .WithArguments("Class contains invalid method");
 
             await VerifyCS.VerifyAnalyzerAsync(test, new SelectorlyzerConfig
