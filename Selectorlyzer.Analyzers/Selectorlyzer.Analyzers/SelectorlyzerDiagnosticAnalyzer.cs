@@ -1,8 +1,10 @@
 ﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Selectorlyzer.Qulaly;
 using Selectorlyzer.Qulaly.Matcher.Selectors;
+using Selectorlyzer.Qulaly.Matcher.Selectors.Pseudos;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -70,13 +72,121 @@ public class SelectorlyzerDiagnosticAnalyzer : DiagnosticAnalyzer
         var qulalySelector = QulalySelector.Parse(selector);
         var analyzer = new Analyzer(qulalySelector, rule, message, severity);
 
-        if (qulalySelector.Selector is TypeSelector typeSelector)
+        if (TryResolveTopLevelSyntaxKinds(qulalySelector.Selector, out var syntaxKinds))
         {
-            context.RegisterSyntaxNodeAction(analyzer.SyntaxNodeRule, typeSelector.Kind);
+            context.RegisterSyntaxNodeAction(analyzer.SyntaxNodeRule, syntaxKinds.ToArray());
         }
         else
         {
             context.RegisterSyntaxTreeAction(analyzer.SyntaxTreeAnalysisRule);
+        }
+    }
+
+    internal static bool TryResolveTopLevelSyntaxKinds(Selector selector, out ImmutableArray<SyntaxKind> syntaxKinds)
+    {
+        var kinds = new HashSet<SyntaxKind>();
+
+        if (TryResolveTopLevelSyntaxKinds(selector, kinds) && kinds.Count > 0)
+        {
+            syntaxKinds = kinds.ToImmutableArray();
+            return true;
+        }
+
+        syntaxKinds = ImmutableArray<SyntaxKind>.Empty;
+        return false;
+    }
+
+    private static bool TryResolveTopLevelSyntaxKinds(Selector selector, ISet<SyntaxKind> kinds)
+    {
+        switch (selector)
+        {
+            case TypeSelector typeSelector:
+                kinds.Add(typeSelector.Kind);
+                return true;
+            case ComplexSelectorList complexSelectorList:
+                if (complexSelectorList.Children.Count == 0)
+                {
+                    return false;
+                }
+
+                foreach (var child in complexSelectorList.Children)
+                {
+                    if (!TryResolveTopLevelSyntaxKinds(child, kinds))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            case ComplexSelector complexSelector:
+                foreach (var element in complexSelector.Children)
+                {
+                    if (element is CompoundSelector compoundSelector)
+                    {
+                        return TryResolveTopLevelSyntaxKinds(compoundSelector, kinds);
+                    }
+
+                    if (element is Selector childSelector)
+                    {
+                        return TryResolveTopLevelSyntaxKinds(childSelector, kinds);
+                    }
+                }
+
+                return false;
+            case CompoundSelector compoundSelector:
+                return TryResolveTopLevelSyntaxKinds(compoundSelector, kinds);
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryResolveTopLevelSyntaxKinds(CompoundSelector compoundSelector, ISet<SyntaxKind> kinds)
+    {
+        foreach (var child in compoundSelector.Children)
+        {
+            switch (child)
+            {
+                case TypeSelector typeSelector:
+                    kinds.Add(typeSelector.Kind);
+                    return true;
+                case PseudoClassSelector pseudoClassSelector:
+                    if (TryResolveTopLevelSyntaxKinds(pseudoClassSelector, kinds))
+                    {
+                        return true;
+                    }
+
+                    break;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveTopLevelSyntaxKinds(PseudoClassSelector pseudoClassSelector, ISet<SyntaxKind> kinds)
+    {
+        switch (pseudoClassSelector)
+        {
+            case ClassPseudoClassSelector:
+                kinds.Add(SyntaxKind.ClassDeclaration);
+                return true;
+            case MethodPseudoClassSelector:
+                kinds.Add(SyntaxKind.MethodDeclaration);
+                return true;
+            case PropertyPseudoClassSelector:
+                kinds.Add(SyntaxKind.PropertyDeclaration);
+                return true;
+            case InterfacePseudoClassSelector:
+                kinds.Add(SyntaxKind.InterfaceDeclaration);
+                return true;
+            case StructPseudoClassSelector:
+                kinds.Add(SyntaxKind.StructDeclaration);
+                return true;
+            case NamespacePseudoClassSelector:
+                kinds.Add(SyntaxKind.NamespaceDeclaration);
+                kinds.Add(SyntaxKind.FileScopedNamespaceDeclaration);
+                return true;
+            default:
+                return false;
         }
     }
 

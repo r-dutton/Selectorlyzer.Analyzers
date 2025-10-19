@@ -1,6 +1,7 @@
 ﻿using FluentAssertions;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Selectorlyzer.Analyzers;
 using Selectorlyzer.Qulaly;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -113,6 +114,51 @@ class AnotherClassName {
                     }
                 }
             }, expected);
+        }
+
+        [Fact]
+        public async Task Should_Verify_With_Diagnostic_For_Class_Has_Selector()
+        {
+            var test = @"
+namespace ConsoleApplication1;
+
+class SampleClass
+{
+    public void ValidMethodName() { }
+}
+
+class InvalidClass
+{
+    public void InvalidMethodName() { }
+}";
+
+            var expected = VerifyCS.Diagnostic(DiagnosticDescriptors.SelectorlyzerWarning)
+                .WithSpan(9, 1, 9, 19)
+                .WithArguments("Class contains invalid method");
+
+            await VerifyCS.VerifyAnalyzerAsync(test, new SelectorlyzerConfig
+            {
+                Rules = new List<SelectorlyzerRule>
+                {
+                    new SelectorlyzerRule
+                    {
+                        Message = "Class contains invalid method",
+                        Selector = ":class:has(:method[Name='InvalidMethodName'])",
+                        Severity = "warning",
+                    }
+                }
+            }, expected);
+        }
+
+        [Fact]
+        public void TryResolveTopLevelSyntaxKinds_maps_pseudo_class_selectors_to_syntax_kinds()
+        {
+            var selector = QulalySelector.Parse(":class:has(:method[Name='InvalidMethodName'])");
+
+            SelectorlyzerDiagnosticAnalyzer.TryResolveTopLevelSyntaxKinds(selector.Selector, out var syntaxKinds)
+                .Should().BeTrue();
+
+            syntaxKinds.Should().BeEquivalentTo(new[] { SyntaxKind.ClassDeclaration });
         }
 
 
