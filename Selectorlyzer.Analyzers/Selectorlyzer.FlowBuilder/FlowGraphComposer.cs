@@ -230,9 +230,6 @@ public sealed class FlowGraphComposer
         var canonicalRoute = CanonicalizeRoute(route);
         var canonicalVerb = string.IsNullOrWhiteSpace(verb) ? null : verb!.Trim().ToUpperInvariant();
 
-        IReadOnlyList<FlowNode> Match(Func<FlowNode, bool> predicate)
-            => candidates.Where(predicate).ToList();
-
         bool RouteMatches(FlowNode node)
         {
             var full = GetStringProperty(node, "full_route");
@@ -247,31 +244,45 @@ public sealed class FlowGraphComposer
             return canonicalVerb is not null && !string.IsNullOrWhiteSpace(target) && string.Equals(target.Trim().ToUpperInvariant(), canonicalVerb, StringComparison.OrdinalIgnoreCase);
         }
 
-        if (canonicalRoute is not null && canonicalVerb is not null)
+        List<FlowNode>? both = canonicalRoute is not null && canonicalVerb is not null ? new List<FlowNode>() : null;
+        List<FlowNode>? byRoute = canonicalRoute is not null ? new List<FlowNode>() : null;
+        List<FlowNode>? byVerb = canonicalVerb is not null ? new List<FlowNode>() : null;
+
+        foreach (var node in candidates)
         {
-            var both = Match(node => RouteMatches(node) && VerbMatches(node));
-            if (both.Count > 0)
+            var routeMatches = RouteMatches(node);
+            var verbMatches = VerbMatches(node);
+
+            if (routeMatches && verbMatches)
             {
-                return both;
+                both?.Add(node);
+                continue;
+            }
+
+            if (routeMatches)
+            {
+                byRoute?.Add(node);
+            }
+
+            if (verbMatches)
+            {
+                byVerb?.Add(node);
             }
         }
 
-        if (canonicalRoute is not null)
+        if (both is not null && both.Count > 0)
         {
-            var byRoute = Match(RouteMatches);
-            if (byRoute.Count > 0)
-            {
-                return byRoute;
-            }
+            return both;
         }
 
-        if (canonicalVerb is not null)
+        if (byRoute is not null && byRoute.Count > 0)
         {
-            var byVerb = Match(VerbMatches);
-            if (byVerb.Count > 0)
-            {
-                return byVerb;
-            }
+            return byRoute;
+        }
+
+        if (byVerb is not null && byVerb.Count > 0)
+        {
+            return byVerb;
         }
 
         return Array.Empty<FlowNode>();
