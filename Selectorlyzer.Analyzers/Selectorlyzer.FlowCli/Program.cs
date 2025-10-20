@@ -30,12 +30,19 @@ public static class Program
         await Task.Yield();
 
         var argsList = args.ToList();
+        if (argsList.Any(a => string.Equals(a, "--help", StringComparison.OrdinalIgnoreCase) || string.Equals(a, "-h", StringComparison.OrdinalIgnoreCase)))
+        {
+            PrintHelp();
+            return 0;
+        }
+
         string workspaceRoot = Directory.GetCurrentDirectory();
         var explicitSolutions = new List<string>();
         var flowPatterns = new List<string>();
         int? maxDepth = null;
-    int concurrency = -1;
-    string? dumpGraphPath = null;
+        int concurrency = -1;
+        string? dumpGraphPath = null;
+        string? outputDirectory = null;
 
         for (int i = 0; i < argsList.Count; i++)
         {
@@ -82,6 +89,12 @@ public static class Program
                     if (i + 1 < argsList.Count)
                     {
                         dumpGraphPath = argsList[++i];
+                    }
+                    break;
+                case "--output-dir":
+                    if (i + 1 < argsList.Count)
+                    {
+                        outputDirectory = argsList[++i];
                     }
                     break;
             }
@@ -164,45 +177,113 @@ public static class Program
             DumpGraph(combined, ResolvePath(workspaceRoot, dumpGraphPath!));
         }
 
-        RenderFlows(combined, flowPatterns, maxDepth);
+        var resolvedOutputDirectory = string.IsNullOrWhiteSpace(outputDirectory)
+            ? null
+            : ResolvePath(workspaceRoot, outputDirectory);
+
+        RenderFlows(combined, flowPatterns, maxDepth, resolvedOutputDirectory);
         return 0;
     }
 
-    private static void RenderFlows(FlowGraph graph, List<string> patterns, int? maxDepth)
+    private static void RenderFlows(FlowGraph graph, List<string> patterns, int? maxDepth, string? outputDirectory)
     {
         var nodesById = graph.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
         var edgesByFrom = graph.Edges
             .GroupBy(e => e.From)
             .ToDictionary(g => g.Key, g => g.ToArray(), StringComparer.Ordinal);
 
-        var controllers = graph.Nodes
+        var controllerNodes = graph.Nodes
             .Where(n => string.Equals(n.Type, "endpoint.controller", StringComparison.OrdinalIgnoreCase))
-            .Where(n => patterns.Count == 0 || patterns.Any(p => n.Fqdn.Contains(p, StringComparison.OrdinalIgnoreCase) || n.Name.Contains(p, StringComparison.OrdinalIgnoreCase)))
-            .OrderBy(n => n.Fqdn, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(n => n.Id, StringComparer.Ordinal);
+
+        var actions = graph.Nodes
+            .Where(n => string.Equals(n.Type, "endpoint.controller_action", StringComparison.OrdinalIgnoreCase))
+            .Select(action => new
+            {
+                Action = action,
+                ControllerId = action.Properties is not null && action.Properties.TryGetValue("controller_id", out var controllerId)
+                    ? controllerId?.ToString()
+                    : null
+            })
+            .Where(entry => !string.IsNullOrWhiteSpace(entry.ControllerId))
+            .Where(entry => MatchesPatterns(entry.Action, controllerNodes.TryGetValue(entry.ControllerId!, out var controller) ? controller : null, patterns))
             .ToList();
 
-        if (controllers.Count == 0)
+        if (actions.Count == 0)
         {
             Console.WriteLine("No controllers matched the requested flows.");
             return;
         }
 
-        foreach (var controller in controllers)
+        var groupedActions = actions
+            .GroupBy(entry => entry.ControllerId!, StringComparer.Ordinal)
+            .OrderBy(group => controllerNodes.TryGetValue(group.Key, out var controller)
+                ? controller.Fqdn
+                : group.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (groupedActions.Count == 0)
         {
-            Console.WriteLine($"controller -> {FormatNode(controller)}");
-            var visited = new HashSet<string>(StringComparer.Ordinal) { controller.Id };
-            if (edgesByFrom.TryGetValue(controller.Id, out var controllerEdges))
+            Console.WriteLine("No controllers matched the requested flows.");
+            return;
+        }
+
+        if (outputDirectory is not null)
+        {
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        foreach (var group in groupedActions)
+        {
+            controllerNodes.TryGetValue(group.Key, out var controller);
+            var controllerHeading = controller is not null
+                ? $"controller -> {FormatNode(controller)}"
+                : $"controller -> (missing: {group.Key})";
+
+            var actionNodes = group.Select(entry => entry.Action)
+                .OrderBy(action => action.Fqdn, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var actionSummaries = actionNodes
+                .Select(action => action.Name)
+                .ToArray();
+
+            using var controllerWriter = new StringWriter();
+            controllerWriter.WriteLine(controllerHeading);
+            controllerWriter.WriteLine($"  actions: {string.Join(", ", actionSummaries)}");
+
+            foreach (var action in actionNodes)
             {
-                foreach (var edge in controllerEdges)
+                controllerWriter.WriteLine();
+                controllerWriter.WriteLine($"action -> {FormatNode(action)}");
+                var visited = new HashSet<string>(StringComparer.Ordinal) { action.Id };
+                if (!edgesByFrom.TryGetValue(action.Id, out var actionEdges))
+                {
+                    continue;
+                }
+
+                foreach (var edge in actionEdges)
                 {
                     if (nodesById.TryGetValue(edge.To, out var target))
                     {
-                        RenderNode(nodesById, edgesByFrom, edge, target, 1, maxDepth, visited);
+                        RenderNode(nodesById, edgesByFrom, edge, target, 1, maxDepth, visited, controllerWriter);
                     }
                 }
             }
 
-            Console.WriteLine();
+            var sectionText = controllerWriter.ToString().TrimEnd();
+            if (outputDirectory is null)
+            {
+                Console.WriteLine(sectionText);
+                Console.WriteLine();
+            }
+            else
+            {
+                Console.WriteLine($"{controllerHeading} [{string.Join(", ", actionSummaries)}]");
+                var controllerName = controller?.Name ?? controller?.Fqdn ?? group.Key;
+                var fileName = SanitizeFileName(controllerName) + ".flow.txt";
+                var destination = Path.Combine(outputDirectory, fileName);
+                File.WriteAllText(destination, sectionText + Environment.NewLine);
+            }
         }
     }
 
@@ -213,14 +294,15 @@ public static class Program
         FlowNode node,
         int depth,
         int? maxDepth,
-        HashSet<string> visited)
+        HashSet<string> visited,
+        TextWriter writer)
     {
         var label = edge.Kind.Equals("remote", StringComparison.OrdinalIgnoreCase) ? "remote" : edge.Kind;
-        Console.WriteLine($"{new string(' ', depth * 2)}{label} -> {FormatNode(node)}");
+        writer.WriteLine($"{new string(' ', depth * 2)}{label} -> {FormatNode(node)}");
 
         if (maxDepth.HasValue && depth >= maxDepth.Value)
         {
-            Console.WriteLine($"{new string(' ', (depth + 1) * 2)}... (max depth reached)");
+            writer.WriteLine($"{new string(' ', (depth + 1) * 2)}... (max depth reached)");
             return;
         }
 
@@ -238,9 +320,24 @@ public static class Program
         {
             if (nodesById.TryGetValue(child.To, out var target))
             {
-                RenderNode(nodesById, edgesByFrom, child, target, depth + 1, maxDepth, visited);
+                RenderNode(nodesById, edgesByFrom, child, target, depth + 1, maxDepth, visited, writer);
             }
         }
+    }
+
+    private static bool MatchesPatterns(FlowNode action, FlowNode? controller, List<string> patterns)
+    {
+        if (patterns.Count == 0)
+        {
+            return true;
+        }
+
+        return patterns.Any(pattern =>
+            action.Fqdn.Contains(pattern, StringComparison.OrdinalIgnoreCase) ||
+            action.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase) ||
+            (controller is not null &&
+                (controller.Fqdn.Contains(pattern, StringComparison.OrdinalIgnoreCase) ||
+                 controller.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase))));
     }
 
     private static string FormatNode(FlowNode node)
@@ -276,6 +373,37 @@ public static class Program
         }
 
         return Path.GetFullPath(Path.IsPathRooted(candidate) ? candidate : Path.Combine(workspaceRoot, candidate));
+    }
+
+    private static void PrintHelp()
+    {
+        Console.WriteLine("Selectorlyzer Flow CLI");
+        Console.WriteLine();
+        Console.WriteLine("Usage: selectorlyzer-flow [options]");
+        Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --workspace <path>       Root directory that contains the flow workspace definition.");
+        Console.WriteLine("  --solution <path>        Analyze a specific solution file.");
+        Console.WriteLine("  --solutions <paths>      Comma-separated list of solution files to analyze.");
+        Console.WriteLine("  --flow <pattern>         Filter controllers/actions whose name or FQDN contains the pattern.");
+        Console.WriteLine("  --flows <patterns>       Comma-separated list of patterns to filter controllers/actions.");
+        Console.WriteLine("  --max-depth <number>     Limit traversal depth when rendering flows.");
+        Console.WriteLine("  --concurrency <number>   Maximum number of compilations to analyze in parallel.");
+        Console.WriteLine("  --dump-graph <path>      Write the composed graph to disk as JSON.");
+        Console.WriteLine("  --output-dir <path>      Write each controller flow to <ControllerName>.flow.txt while printing a summary to stdout.");
+        Console.WriteLine("  --help, -h               Display this help message.");
+    }
+
+    private static string SanitizeFileName(string name)
+    {
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var sanitized = name;
+        foreach (var invalid in invalidChars)
+        {
+            sanitized = sanitized.Replace(invalid, '_');
+        }
+
+        return string.IsNullOrWhiteSpace(sanitized) ? "controller" : sanitized;
     }
 
     private static void DumpGraph(FlowGraph graph, string destination)
