@@ -20,6 +20,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Selectorlyzer.FlowBuilder\Selectorlyzer.FlowBuilder.csproj" />
+    <ProjectReference Include="..\Selectorlyzer.FlowCli\Selectorlyzer.FlowCli.csproj" />
     <ProjectReference Include="..\Selectorlyzer.Qulaly\Selectorlyzer.Qulaly.csproj" />
   </ItemGroup>
 

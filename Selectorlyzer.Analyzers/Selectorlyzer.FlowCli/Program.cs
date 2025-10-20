@@ -346,9 +346,19 @@ public static class Program
         var details = new List<string>();
         if (node.Properties is { Count: > 0 })
         {
+            string? verbText = null;
             if (node.Properties.TryGetValue("verb", out var verb) && verb is not null)
             {
-                details.Add($"verb={verb}");
+                verbText = verb.ToString();
+            }
+            else if (node.Properties.TryGetValue("http_method", out var httpMethod) && httpMethod is not null)
+            {
+                verbText = httpMethod.ToString();
+            }
+
+            if (!string.IsNullOrWhiteSpace(verbText))
+            {
+                details.Add($"verb={verbText}");
             }
 
             if (node.Properties.TryGetValue("full_route", out var fullRoute) && fullRoute is not null)
