@@ -402,12 +402,30 @@ public static class Program
 
         foreach (var pattern in normalizedPatterns)
         {
-            foreach (var candidate in candidates)
+            if (candidates.Any(candidate => candidate.Contains(pattern, StringComparison.Ordinal)))
             {
-                if (candidate.Contains(pattern, StringComparison.Ordinal))
+                return true;
+            }
+
+            var tokens = pattern.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length <= 1)
+            {
+                continue;
+            }
+
+            var matchesAllTokens = true;
+            foreach (var token in tokens)
+            {
+                if (!candidates.Any(candidate => candidate.Contains(token, StringComparison.Ordinal)))
                 {
-                    return true;
+                    matchesAllTokens = false;
+                    break;
                 }
+            }
+
+            if (matchesAllTokens)
+            {
+                return true;
             }
         }
 
