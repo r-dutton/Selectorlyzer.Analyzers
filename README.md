@@ -99,6 +99,9 @@ Selectorlizer supports a subset of [CSS selector level 4](https://www.w3.org/TR/
     - `:interface`
     - `:lambda`
     - `:property`
+    - `:namespace`
+    - `:statement`
+    - `:struct`
 - Combinators
     - [Descendant](https://www.w3.org/TR/selectors-4/#descendant-combinators): `node descendant`
     - [Child](https://www.w3.org/TR/selectors-4/#child-combinators): `node > child`
@@ -108,23 +111,37 @@ Selectorlizer supports a subset of [CSS selector level 4](https://www.w3.org/TR/
     - [Negation](https://www.w3.org/TR/selectors-4/#negation): `:not(...)`
     - [Matches-any](https://www.w3.org/TR/selectors-4/#matches): `:is(...)`
     - [Relational](https://www.w3.org/TR/selectors-4/#relational): `:has(...)`
-    - [`:nth-child`](https://www.w3.org/TR/selectors-4/#the-nth-child-pseudo)
+    - [Scoping](https://www.w3.org/TR/selectors-4/#the-scope-pseudo): `:scope`
+    - [`:root`](https://www.w3.org/TR/selectors-4/#the-root-pseudo)
+    - [`:empty`](https://www.w3.org/TR/selectors-4/#empty-pseudo)
+    - [`:where`](https://www.w3.org/TR/selectors-4/#where-pseudo)
     - [`:first-child`](https://www.w3.org/TR/selectors-4/#the-first-child-pseudo)
     - [`:last-child`](https://www.w3.org/TR/selectors-4/#the-last-child-pseudo)
+    - [`:only-child`](https://www.w3.org/TR/selectors-4/#the-only-child-pseudo)
+    - [`:nth-child`](https://www.w3.org/TR/selectors-4/#the-nth-child-pseudo)
+    - [`:nth-last-child`](https://www.w3.org/TR/selectors-4/#the-nth-last-child-pseudo)
+    - [`:nth-of-type`](https://www.w3.org/TR/selectors-4/#the-nth-of-type-pseudo)
+    - [`:nth-last-of-type`](https://www.w3.org/TR/selectors-4/#the-nth-last-of-type-pseudo)
+    - [`:only-of-type`](https://www.w3.org/TR/selectors-4/#the-only-of-type-pseudo)
 - Attributes (Properties)
-    - `[PropName]` (existance)
+    - `[PropName]` (existence)
     - `[PropName = 'Exact']`
     - `[PropName ^= 'StartsWith']`
     - `[PropName $= 'EndsWith']`
     - `[PropName *= 'Contains']`
     - `[PropName ~= 'Item']` (ex. `[Modifiers ~= 'async']`)
+    - `[PropName |= 'Prefix']`
+    - `[PropName > 0]`, `[PropName >= 2]`, `[PropName < 5]`, `[PropName <= 3]`
 - Extensions
     - `:implements(...)`: Combinator for checking if a class or interface implements a matching selector
+    - `:capture(alias[, propertyPath])`: Capture the current node, symbol, or property for reuse in later selectors or messages
     - `[Name = 'MethodName']`: Name special property
         - `Name` is a special property for convenience that can be used in `MethodDeclaration`, `ClassDeclaration` ... etc
     - `[TypeParameters.Count > 0]`: Conditions
         - `Parameters.Count`
         - `TypeParameters.Count`
+        - `Bases.Count`
+        - `AttributeLists.Count`
 
 ## License
 MIT License
