@@ -332,12 +332,91 @@ public static class Program
             return true;
         }
 
-        return patterns.Any(pattern =>
-            action.Fqdn.Contains(pattern, StringComparison.OrdinalIgnoreCase) ||
-            action.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase) ||
-            (controller is not null &&
-                (controller.Fqdn.Contains(pattern, StringComparison.OrdinalIgnoreCase) ||
-                 controller.Name.Contains(pattern, StringComparison.OrdinalIgnoreCase))));
+        var normalizedPatterns = patterns
+            .Select(Normalize)
+            .Where(p => p is not null)
+            .Select(p => p!)
+            .ToArray();
+
+        if (normalizedPatterns.Length == 0)
+        {
+            return true;
+        }
+
+        var candidates = new HashSet<string>(StringComparer.Ordinal);
+
+        void AddCandidate(string? value)
+        {
+            var normalized = Normalize(value);
+            if (normalized is not null)
+            {
+                candidates.Add(normalized);
+            }
+        }
+
+        void AddPropertyValues(IReadOnlyDictionary<string, object?>? properties)
+        {
+            if (properties is null)
+            {
+                return;
+            }
+
+            foreach (var property in properties)
+            {
+                switch (property.Value)
+                {
+                    case null:
+                        continue;
+                    case string text:
+                        AddCandidate(text);
+                        break;
+                    case IEnumerable<string> textValues:
+                        foreach (var text in textValues)
+                        {
+                            AddCandidate(text);
+                        }
+                        break;
+                    case IEnumerable<object?> objectValues:
+                        foreach (var value in objectValues)
+                        {
+                            AddCandidate(value?.ToString());
+                        }
+                        break;
+                    default:
+                        AddCandidate(property.Value.ToString());
+                        break;
+                }
+            }
+        }
+
+        AddCandidate(action.Name);
+        AddCandidate(action.Fqdn);
+        AddPropertyValues(action.Properties);
+
+        if (controller is not null)
+        {
+            AddCandidate(controller.Name);
+            AddCandidate(controller.Fqdn);
+            AddPropertyValues(controller.Properties);
+        }
+
+        foreach (var pattern in normalizedPatterns)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (candidate.Contains(pattern, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static string? Normalize(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
     }
 
     private static string FormatNode(FlowNode node)
@@ -385,8 +464,8 @@ public static class Program
         Console.WriteLine("  --workspace <path>       Root directory that contains the flow workspace definition.");
         Console.WriteLine("  --solution <path>        Analyze a specific solution file.");
         Console.WriteLine("  --solutions <paths>      Comma-separated list of solution files to analyze.");
-        Console.WriteLine("  --flow <pattern>         Filter controllers/actions whose name or FQDN contains the pattern.");
-        Console.WriteLine("  --flows <patterns>       Comma-separated list of patterns to filter controllers/actions.");
+        Console.WriteLine("  --flow <pattern>         Filter controllers/actions whose name, FQDN, or metadata contains the pattern.");
+        Console.WriteLine("  --flows <patterns>       Comma-separated list of patterns to filter controllers/actions by name, FQDN, or metadata.");
         Console.WriteLine("  --max-depth <number>     Limit traversal depth when rendering flows.");
         Console.WriteLine("  --concurrency <number>   Maximum number of compilations to analyze in parallel.");
         Console.WriteLine("  --dump-graph <path>      Write the composed graph to disk as JSON.");
