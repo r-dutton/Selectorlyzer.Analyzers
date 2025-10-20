@@ -49,54 +49,96 @@ public static class Program
             switch (argsList[i])
             {
                 case "--workspace":
-                    if (i + 1 < argsList.Count)
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var workspaceValue, out var error))
                     {
-                        workspaceRoot = Path.GetFullPath(argsList[++i]);
+                        return Fail(error);
                     }
+
+                    workspaceRoot = Path.GetFullPath(workspaceValue);
                     break;
+                }
                 case "--solution":
-                    if (i + 1 < argsList.Count)
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var solutionValue, out var error))
                     {
-                        explicitSolutions.Add(argsList[++i]);
+                        return Fail(error);
                     }
+
+                    explicitSolutions.Add(solutionValue);
                     break;
+                }
                 case "--solutions":
-                    if (i + 1 < argsList.Count)
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var solutionsValue, out var error))
                     {
-                        explicitSolutions.AddRange(argsList[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                        return Fail(error);
                     }
+
+                    explicitSolutions.AddRange(solutionsValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                     break;
+                }
                 case "--flow":
                 case "--flows":
-                    if (i + 1 < argsList.Count)
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var flowValue, out var error))
                     {
-                        flowPatterns.AddRange(argsList[++i].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                        return Fail(error);
                     }
+
+                    flowPatterns.AddRange(flowValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                     break;
+                }
                 case "--max-depth":
-                    if (i + 1 < argsList.Count && int.TryParse(argsList[++i], out var depth) && depth >= 0)
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var depthValue, out var error))
                     {
-                        maxDepth = depth;
+                        return Fail(error);
                     }
+
+                    if (!int.TryParse(depthValue, out var depth) || depth < 0)
+                    {
+                        return Fail($"Option '--max-depth' requires a non-negative integer value. Received '{depthValue}'.");
+                    }
+
+                    maxDepth = depth;
                     break;
+                }
                 case "--concurrency":
-                    if (i + 1 < argsList.Count && int.TryParse(argsList[++i], out var parsedConcurrency))
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var concurrencyValue, out var error))
                     {
-                        concurrency = parsedConcurrency <= 0 ? -1 : parsedConcurrency;
+                        return Fail(error);
                     }
+
+                    if (!int.TryParse(concurrencyValue, out var parsedConcurrency))
+                    {
+                        return Fail($"Option '--concurrency' requires an integer value. Received '{concurrencyValue}'.");
+                    }
+
+                    concurrency = parsedConcurrency <= 0 ? -1 : parsedConcurrency;
                     break;
+                }
                 case "--dump-graph":
-                    if (i + 1 < argsList.Count)
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var dumpValue, out var error))
                     {
-                        dumpGraphPath = argsList[++i];
+                        return Fail(error);
                     }
+
+                    dumpGraphPath = dumpValue;
                     break;
+                }
                 case "--output-dir":
-                    if (i + 1 < argsList.Count)
+                {
+                    if (!TryReadOptionValue(argsList, ref i, out var outputValue, out var error))
                     {
-                        outputDirectory = argsList[++i];
+                        return Fail(error);
                     }
+
+                    outputDirectory = outputValue;
                     break;
+                }
             }
         }
 
@@ -183,6 +225,37 @@ public static class Program
 
         RenderFlows(combined, flowPatterns, maxDepth, resolvedOutputDirectory);
         return 0;
+    }
+
+    private static int Fail(string message)
+    {
+        Console.Error.WriteLine($"error: {message}");
+        return 1;
+    }
+
+    private static bool TryReadOptionValue(List<string> args, ref int index, out string value, out string errorMessage)
+    {
+        var option = args[index];
+        errorMessage = string.Empty;
+
+        if (index + 1 >= args.Count)
+        {
+            value = string.Empty;
+            errorMessage = $"Option '{option}' requires a value.";
+            return false;
+        }
+
+        var candidate = args[index + 1];
+        if (candidate.StartsWith("-", StringComparison.Ordinal))
+        {
+            value = string.Empty;
+            errorMessage = $"Option '{option}' requires a value but '{candidate}' looks like another option.";
+            return false;
+        }
+
+        index++;
+        value = candidate;
+        return true;
     }
 
     private static void RenderFlows(FlowGraph graph, List<string> patterns, int? maxDepth, string? outputDirectory)
