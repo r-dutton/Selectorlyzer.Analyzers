@@ -56,7 +56,7 @@ namespace Selectorlyzer.FlowBuilder
         private sealed class TreeIndex
         {
             private readonly SyntaxTree _syntaxTree;
-            private readonly ConditionalWeakTable<SyntaxNode, SymbolList> _cache = new();
+            private ConditionalWeakTable<SyntaxNode, SymbolList> _cache = new();
             private Func<SemanticModel> _semanticModelFactory;
             private WeakReference<SemanticModel>? _semanticModel;
 
@@ -69,6 +69,8 @@ namespace Selectorlyzer.FlowBuilder
             public void UpdateSemanticModelFactory(Func<SemanticModel> semanticModelFactory)
             {
                 _semanticModelFactory = semanticModelFactory ?? throw new ArgumentNullException(nameof(semanticModelFactory));
+                _semanticModel = null;
+                _cache = new ConditionalWeakTable<SyntaxNode, SymbolList>();
             }
 
             public IReadOnlyList<ISymbol> GetSymbols(SyntaxNode node)
