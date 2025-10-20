@@ -81,8 +81,7 @@ namespace Selectorlyzer.FlowBuilder
                 var semanticModel = GetSemanticModel();
                 var holder = _cache.GetValue(
                     node,
-                    static (n, state) => new SymbolList(SymbolCollector.Collect(state.SemanticModel, n)),
-                    new CollectorState(semanticModel));
+                    n => new SymbolList(SymbolCollector.Collect(semanticModel, n)));
 
                 return holder.Symbols;
             }
@@ -97,16 +96,6 @@ namespace Selectorlyzer.FlowBuilder
                 var semanticModel = _semanticModelFactory();
                 _semanticModel = new WeakReference<SemanticModel>(semanticModel);
                 return semanticModel;
-            }
-
-            private readonly struct CollectorState
-            {
-                public CollectorState(SemanticModel semanticModel)
-                {
-                    SemanticModel = semanticModel;
-                }
-
-                public SemanticModel SemanticModel { get; }
             }
         }
 
@@ -163,6 +152,30 @@ namespace Selectorlyzer.FlowBuilder
                 base.VisitAttribute(node);
             }
 
+            public override void VisitIdentifierName(IdentifierNameSyntax node)
+            {
+                AddTypeSymbol(node);
+                base.VisitIdentifierName(node);
+            }
+
+            public override void VisitGenericName(GenericNameSyntax node)
+            {
+                AddTypeSymbol(node);
+                base.VisitGenericName(node);
+            }
+
+            public override void VisitQualifiedName(QualifiedNameSyntax node)
+            {
+                AddTypeSymbol(node);
+                base.VisitQualifiedName(node);
+            }
+
+            public override void VisitAliasQualifiedName(AliasQualifiedNameSyntax node)
+            {
+                AddTypeSymbol(node);
+                base.VisitAliasQualifiedName(node);
+            }
+
             private void AddSymbols(ImmutableArray<ISymbol> symbols)
             {
                 foreach (var symbol in symbols)
@@ -176,6 +189,43 @@ namespace Selectorlyzer.FlowBuilder
                     {
                         _builder.Add(symbol);
                     }
+                }
+            }
+
+            private void AddSymbol(ISymbol? symbol)
+            {
+                if (symbol is null || symbol.Kind == SymbolKind.Namespace)
+                {
+                    return;
+                }
+
+                if (_symbols.Add(symbol))
+                {
+                    _builder.Add(symbol);
+                }
+            }
+
+            private void AddTypeSymbol(SyntaxNode node)
+            {
+                var symbolInfo = _semanticModel.GetSymbolInfo(node);
+                if (symbolInfo.Symbol is ITypeSymbol typeSymbol)
+                {
+                    AddSymbol(typeSymbol);
+                    return;
+                }
+
+                var candidateType = symbolInfo.CandidateSymbols.OfType<ITypeSymbol>().FirstOrDefault();
+                if (candidateType is not null)
+                {
+                    AddSymbol(candidateType);
+                    return;
+                }
+
+                var typeInfo = _semanticModel.GetTypeInfo(node);
+                var fallbackType = typeInfo.Type ?? typeInfo.ConvertedType;
+                if (fallbackType is ITypeSymbol type)
+                {
+                    AddSymbol(type);
                 }
             }
 

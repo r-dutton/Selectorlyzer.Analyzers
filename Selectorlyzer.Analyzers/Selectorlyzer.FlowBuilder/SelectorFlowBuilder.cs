@@ -731,46 +731,14 @@ namespace Selectorlyzer.FlowBuilder
 
                 public IReadOnlyList<MemberDeclarationSyntax> Declarations => _declarations;
 
-                public override void VisitClassDeclaration(ClassDeclarationSyntax node)
+                public override void Visit(SyntaxNode? node)
                 {
-                    _declarations.Add(node);
-                    base.VisitClassDeclaration(node);
-                }
+                    if (node is MemberDeclarationSyntax member && node is TypeDeclarationSyntax or EnumDeclarationSyntax or DelegateDeclarationSyntax)
+                    {
+                        _declarations.Add(member);
+                    }
 
-                public override void VisitStructDeclaration(StructDeclarationSyntax node)
-                {
-                    _declarations.Add(node);
-                    base.VisitStructDeclaration(node);
-                }
-
-                public override void VisitInterfaceDeclaration(InterfaceDeclarationSyntax node)
-                {
-                    _declarations.Add(node);
-                    base.VisitInterfaceDeclaration(node);
-                }
-
-                public override void VisitRecordDeclaration(RecordDeclarationSyntax node)
-                {
-                    _declarations.Add(node);
-                    base.VisitRecordDeclaration(node);
-                }
-
-                public override void VisitRecordStructDeclaration(RecordStructDeclarationSyntax node)
-                {
-                    _declarations.Add(node);
-                    base.VisitRecordStructDeclaration(node);
-                }
-
-                public override void VisitEnumDeclaration(EnumDeclarationSyntax node)
-                {
-                    _declarations.Add(node);
-                    base.VisitEnumDeclaration(node);
-                }
-
-                public override void VisitDelegateDeclaration(DelegateDeclarationSyntax node)
-                {
-                    _declarations.Add(node);
-                    base.VisitDelegateDeclaration(node);
+                    base.Visit(node);
                 }
             }
 
