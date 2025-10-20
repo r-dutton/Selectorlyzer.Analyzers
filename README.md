@@ -19,6 +19,8 @@ The `Selectorlyzer.FlowCli` tool can render request flows discovered by the anal
 
 Use `--help` to see the available switches. Provide `--output-dir <path>` to write the detailed flow for every controller to `<ControllerName>.flow.txt` while a concise summary (controller heading and action list) is printed to the console.
 
+Flow filters match against controller/action names, fully-qualified names, and captured metadata such as HTTP verbs or routes. For example, `selectorlyzer-flow --flow "get /users"` will include any action whose metadata contains the `GET` verb and `/users` route fragment.
+
 ## Installation
 
 1. Install the NuGet Package `Selectorlyzer.Analyzers`.
