@@ -11,7 +11,13 @@ Selectorlyzer.Analyzers is a highly customizable Roslyn Analyzer designed to emp
 
 The preferable way to use the analyzers is to add the NuGet package Selectorlyzer.Analyzers to the project where you want to enforce rules.
 
-A `selectorlyzer.json` or `.selectorlyzer.json` file is used to specify rules. 
+A `selectorlyzer.json` or `.selectorlyzer.json` file is used to specify rules.
+
+## Flow CLI
+
+The `Selectorlyzer.FlowCli` tool can render request flows discovered by the analyzers. By default it groups `endpoint.controller_action` nodes by their owning controller and renders each action's downstream graph separately. Each controller heading shows the controller metadata and lists the actions that were discovered.
+
+Use `--help` to see the available switches. Provide `--output-dir <path>` to write the detailed flow for every controller to `<ControllerName>.flow.txt` while a concise summary (controller heading and action list) is printed to the console.
 
 ## Installation
 
