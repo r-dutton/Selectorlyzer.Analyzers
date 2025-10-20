@@ -93,7 +93,14 @@ namespace Selectorlyzer.FlowBuilder
 
         public static IReadOnlyDictionary<string, object?>? ExtractControllerProperties(SelectorMatch match)
         {
-            if (match.Symbol is not INamedTypeSymbol typeSymbol)
+            return match.Symbol is INamedTypeSymbol typeSymbol
+                ? ExtractControllerProperties(typeSymbol)
+                : null;
+        }
+
+        public static IReadOnlyDictionary<string, object?>? ExtractControllerProperties(INamedTypeSymbol typeSymbol)
+        {
+            if (typeSymbol is null)
             {
                 return null;
             }
@@ -110,12 +117,24 @@ namespace Selectorlyzer.FlowBuilder
                 dictionary["route_prefix"] = CanonicalizeRoute(route, typeSymbol.Name);
             }
 
+            if (TryGetAuthorizationPolicy(typeSymbol.GetAttributes(), out var policy))
+            {
+                dictionary["authorization_policy"] = policy;
+            }
+
             return dictionary;
         }
 
         public static IReadOnlyDictionary<string, object?>? ExtractControllerActionProperties(SelectorMatch match)
         {
-            if (match.Symbol is not IMethodSymbol methodSymbol)
+            return match.Symbol is IMethodSymbol methodSymbol
+                ? ExtractControllerActionProperties(methodSymbol)
+                : null;
+        }
+
+        public static IReadOnlyDictionary<string, object?>? ExtractControllerActionProperties(IMethodSymbol methodSymbol)
+        {
+            if (methodSymbol is null)
             {
                 return null;
             }
@@ -135,6 +154,16 @@ namespace Selectorlyzer.FlowBuilder
                 {
                     dictionary["controller_route"] = CanonicalizeRoute(controllerRoute, containingType.Name);
                 }
+
+                if (TryGetAuthorizationPolicy(containingType.GetAttributes(), out var authorizationPolicy))
+                {
+                    dictionary["authorization_policy"] = authorizationPolicy;
+                }
+            }
+
+            if (TryGetAuthorizationPolicy(methodSymbol.GetAttributes(), out var actionPolicy))
+            {
+                dictionary["authorization_policy"] = actionPolicy;
             }
 
             string? methodRoute = null;
@@ -183,12 +212,9 @@ namespace Selectorlyzer.FlowBuilder
                 dictionary["http_method"] = httpMethod;
             }
 
-            if (methodRoute is null)
+            if (methodRoute is null && TryGetRouteTemplate(methodSymbol.GetAttributes(), out var routeFromRouteAttribute))
             {
-                if (TryGetRouteTemplate(methodSymbol.GetAttributes(), out var routeFromRouteAttribute))
-                {
-                    methodRoute = routeFromRouteAttribute;
-                }
+                methodRoute = routeFromRouteAttribute;
             }
 
             var combinedRoute = CombineRoutes(dictionary, methodRoute, methodSymbol.ContainingType?.Name);
@@ -200,6 +226,12 @@ namespace Selectorlyzer.FlowBuilder
             if (!string.IsNullOrWhiteSpace(combinedRoute))
             {
                 dictionary["full_route"] = combinedRoute;
+            }
+
+            var statusCode = InferPrimaryStatusCode(methodSymbol);
+            if (statusCode is not null)
+            {
+                dictionary["status_code"] = statusCode;
             }
 
             return dictionary;
@@ -404,6 +436,76 @@ namespace Selectorlyzer.FlowBuilder
             }
 
             return normalized.Replace("//", "/", StringComparison.Ordinal);
+        }
+
+        private static bool TryGetAuthorizationPolicy(IEnumerable<AttributeData> attributes, out string? policy)
+        {
+            foreach (var attribute in attributes)
+            {
+                if (TryGetAuthorizationPolicy(attribute, out policy))
+                {
+                    return true;
+                }
+            }
+
+            policy = null;
+            return false;
+        }
+
+        private static bool TryGetAuthorizationPolicy(AttributeData attribute, out string? policy)
+        {
+            policy = null;
+            var attributeName = attribute.AttributeClass?.Name;
+            if (string.IsNullOrWhiteSpace(attributeName))
+            {
+                return false;
+            }
+
+            if (!string.Equals(attributeName, "AuthorizeAttribute", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            foreach (var namedArgument in attribute.NamedArguments)
+            {
+                if (string.Equals(namedArgument.Key, "Policy", StringComparison.OrdinalIgnoreCase) && namedArgument.Value.Value is string stringPolicy)
+                {
+                    policy = stringPolicy;
+                    return true;
+                }
+            }
+
+            if (attribute.ConstructorArguments.Length > 0 && attribute.ConstructorArguments[0].Value is string ctorPolicy && !string.IsNullOrWhiteSpace(ctorPolicy))
+            {
+                policy = ctorPolicy;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static string? InferPrimaryStatusCode(IMethodSymbol methodSymbol)
+        {
+            foreach (var attribute in methodSymbol.GetAttributes())
+            {
+                if (attribute.AttributeClass is null)
+                {
+                    continue;
+                }
+
+                var name = attribute.AttributeClass.Name;
+                if (!name.StartsWith("ProducesResponseTypeAttribute", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (attribute.ConstructorArguments.Length > 0 && attribute.ConstructorArguments[0].Value is int status)
+                {
+                    return status.ToString();
+                }
+            }
+
+            return null;
         }
     }
 }

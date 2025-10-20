@@ -156,7 +156,7 @@ public sealed class HttpGetAttribute : Attribute
 
             combined.Edges.Should().NotBeEmpty();
             combined.Edges.Should().OnlyContain(e => e.Kind != "remote");
-            combined.Edges.Count(e => e.Kind == "flow").Should().Be(50);
+            combined.Edges.Where(e => e.Kind == "flow").Should().HaveCount(50);
 
             listener.Messages.Should().Contain(message => message.Contains("Skipping remote edge augmentation", StringComparison.Ordinal));
         }

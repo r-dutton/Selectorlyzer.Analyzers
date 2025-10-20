@@ -49,7 +49,7 @@ namespace Selectorlyzer.FlowBuilder
             private readonly int[] _globalRuleIndices;
             private readonly Dictionary<SyntaxKind, int[]> _ruleIndicesByKind;
             private readonly Dictionary<string, NodeBuilder> _nodes = new(StringComparer.Ordinal);
-            private readonly Dictionary<ISymbol, string> _symbolToId = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<ISymbol, NodeBuilder> _symbolInstanceLookup = new(ReferenceEqualityComparer.Instance);
             private readonly List<FlowEdge> _edges = new();
             private readonly HashSet<(string From, string To, string Kind)> _edgeKeys = new();
             private readonly string _defaultProject;
@@ -62,7 +62,9 @@ namespace Selectorlyzer.FlowBuilder
             private readonly Dictionary<INamedTypeSymbol, HashSet<INamedTypeSymbol>> _mutableImplementationsByInterface = new(SymbolEqualityComparer.Default);
             private readonly Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>> _mutableMediatorRequestHandlers = new(SymbolEqualityComparer.Default);
             private readonly Dictionary<ITypeSymbol, HashSet<INamedTypeSymbol>> _mutableMediatorNotificationHandlers = new(SymbolEqualityComparer.Default);
-            private readonly SyntaxReferenceIndex _syntaxReferenceIndex = new();
+            private readonly Dictionary<INamedTypeSymbol, (INamedTypeSymbol? BaseType, ImmutableArray<INamedTypeSymbol> Interfaces, ImmutableArray<ITypeSymbol> TypeArguments)> _typeRelationCache = new(SymbolEqualityComparer.Default);
+            private readonly Dictionary<SyntaxTree, SyntaxTree> _externalSyntaxTreeMap = new(ReferenceEqualityComparer.Instance);
+            private readonly Dictionary<string, SyntaxTree> _syntaxTreesByPath = new(StringComparer.OrdinalIgnoreCase);
             private bool _typeRelationsBuilt;
 
             public NodeRegistry(Compilation compilation, SelectorQueryContext baseContext, IReadOnlyList<SelectorNodeRule> rules)
@@ -73,6 +75,14 @@ namespace Selectorlyzer.FlowBuilder
                 (_selectors, _globalRuleIndices, _ruleIndicesByKind) = BuildSelectorDispatchTables(rules);
                 _defaultAssembly = compilation.AssemblyName ?? "Assembly";
                 _defaultProject = baseContext.Metadata?.GetValueOrDefault("project") as string ?? _defaultAssembly;
+
+                foreach (var syntaxTree in compilation.SyntaxTrees)
+                {
+                    if (syntaxTree.FilePath is { Length: > 0 } filePath)
+                    {
+                        _syntaxTreesByPath[filePath] = syntaxTree;
+                    }
+                }
             }
 
             public void Index()
@@ -81,7 +91,7 @@ namespace Selectorlyzer.FlowBuilder
 
                 foreach (var tree in _compilation.SyntaxTrees)
                 {
-                    _syntaxReferenceIndex.IndexTree(tree, () => _compilation.GetSemanticModel(tree));
+                    var semanticModel = _compilation.GetSemanticModel(tree);
                     var root = tree.GetRoot();
                     root.QueryMatches(
                         _selectors,
@@ -240,6 +250,50 @@ namespace Selectorlyzer.FlowBuilder
                     return syntaxTree;
                 }
 
+                if (_externalSyntaxTreeMap.TryGetValue(syntaxTree, out var mappedTree) && _compilation.SyntaxTrees.Contains(mappedTree))
+                {
+                    return mappedTree;
+                }
+
+                if (syntaxTree.FilePath is { Length: > 0 } existingPath &&
+                    _syntaxTreesByPath.TryGetValue(existingPath, out var pathTree) &&
+                    _compilation.SyntaxTrees.Contains(pathTree))
+                {
+                    _externalSyntaxTreeMap[syntaxTree] = pathTree;
+                    return pathTree;
+                }
+
+                var treeToAdd = CreateCompatibleSyntaxTree(syntaxTree);
+                var addedToCompilation = false;
+
+                if (!_compilation.SyntaxTrees.Contains(treeToAdd))
+                {
+                    var updatedCompilation = _compilation.AddSyntaxTrees(treeToAdd);
+                    if (!ReferenceEquals(_compilation, updatedCompilation))
+                    {
+                        _compilation = updatedCompilation;
+                        _baseContext = _baseContext.WithCompilation(updatedCompilation);
+                    }
+
+                    addedToCompilation = true;
+                }
+
+                _externalSyntaxTreeMap[syntaxTree] = treeToAdd;
+                if (treeToAdd.FilePath is { Length: > 0 } filePath)
+                {
+                    _syntaxTreesByPath[filePath] = treeToAdd;
+                }
+
+                if (addedToCompilation && _typeRelationsBuilt)
+                {
+                    ExtendTypeRelationMapsForTree(treeToAdd);
+                }
+
+                return treeToAdd;
+            }
+
+            private SyntaxTree CreateCompatibleSyntaxTree(SyntaxTree syntaxTree)
+            {
                 var treeToAdd = syntaxTree;
 
                 if (_compilation is CSharpCompilation cSharpCompilation)
@@ -263,20 +317,6 @@ namespace Selectorlyzer.FlowBuilder
                     }
                 }
 
-                var updatedCompilation = _compilation.AddSyntaxTrees(treeToAdd);
-                if (!ReferenceEquals(_compilation, updatedCompilation))
-                {
-                    _compilation = updatedCompilation;
-                    _baseContext = _baseContext.WithCompilation(updatedCompilation);
-                }
-
-                _syntaxReferenceIndex.IndexTree(treeToAdd, () => _compilation.GetSemanticModel(treeToAdd));
-
-                if (_typeRelationsBuilt)
-                {
-                    ExtendTypeRelationMapsForTree(treeToAdd);
-                }
-
                 return treeToAdd;
             }
 
@@ -284,9 +324,9 @@ namespace Selectorlyzer.FlowBuilder
             {
                 if (symbol is not null)
                 {
-                    if (_symbolToId.TryGetValue(symbol, out var existingId))
+                    if (_symbolInstanceLookup.TryGetValue(symbol, out var existing))
                     {
-                        return _nodes[existingId];
+                        return existing;
                     }
 
                     if (!symbol.Locations.Any(l => l.IsInSource))
@@ -294,10 +334,16 @@ namespace Selectorlyzer.FlowBuilder
                         return null;
                     }
 
-                    var id = symbol.GetDocumentationCommentId() ?? symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+                    var id = BuildSymbolId(symbol);
+                    if (_nodes.TryGetValue(id, out var existingById))
+                    {
+                        _symbolInstanceLookup[symbol] = existingById;
+                        return existingById;
+                    }
+
                     var builder = new NodeBuilder(id, symbol);
-                    _symbolToId[symbol] = id;
                     _nodes[id] = builder;
+                    _symbolInstanceLookup[symbol] = builder;
                     return builder;
                 }
 
@@ -353,29 +399,13 @@ namespace Selectorlyzer.FlowBuilder
 
                 if (origin is null)
                 {
-                    var rootCache = new Dictionary<SyntaxTree, SyntaxNode>();
                     foreach (var snapshot in node.MatchSnapshots)
                     {
-                        if (snapshot.SyntaxTree is not { } syntaxTree)
-                        {
-                            continue;
-                        }
-
-                        var ensuredTree = EnsureCompilationContainsTree(syntaxTree);
-                        _syntaxReferenceIndex.IndexTree(ensuredTree, () => _compilation.GetSemanticModel(ensuredTree));
-
-                        if (!rootCache.TryGetValue(ensuredTree, out var ensuredRoot))
-                        {
-                            ensuredRoot = ensuredTree.GetRoot();
-                            rootCache[ensuredTree] = ensuredRoot;
-                        }
-
-                        var mappedNode = ensuredRoot.FindNode(snapshot.Span, getInnermostNodeForTie: true);
-
-                        foreach (var referencedSymbol in _syntaxReferenceIndex.GetSymbols(mappedNode))
-                        {
-                            AddSymbol(referencedSymbol);
-                        }
+                        var ensuredTree = EnsureCompilationContainsTree(snapshot.SyntaxTree);
+                        var root = ensuredTree.GetRoot();
+                        var mappedNode = root.FindNode(snapshot.Span, getInnermostNodeForTie: true);
+                        var semanticModel = _compilation.GetSemanticModel(ensuredTree);
+                        CollectSymbolsFromNode(mappedNode, semanticModel, AddSymbol);
                     }
                 }
 
@@ -404,17 +434,81 @@ namespace Selectorlyzer.FlowBuilder
                         mappedNode = root.FindNode(syntax.Span, getInnermostNodeForTie: true);
                     }
 
-                    _syntaxReferenceIndex.IndexTree(ensuredTree, () => _compilation.GetSemanticModel(ensuredTree));
+                    var semanticModel = _compilation.GetSemanticModel(ensuredTree);
+                    CollectSymbolsFromNode(mappedNode, semanticModel, addSymbol);
+                }
+            }
 
-                    foreach (var referencedSymbol in _syntaxReferenceIndex.GetSymbols(mappedNode))
+            private static void CollectSymbolsFromNode(SyntaxNode node, SemanticModel semanticModel, Action<ISymbol?> addSymbol)
+            {
+                var symbolCache = new Dictionary<SyntaxNode, ISymbol?>(ReferenceEqualityComparer.Instance);
+                var seenSymbols = new HashSet<ISymbol>(SymbolEqualityComparer.Default);
+
+                foreach (var descendant in node.DescendantNodesAndSelf())
+                {
+                    if (!symbolCache.TryGetValue(descendant, out var symbol))
                     {
-                        addSymbol(referencedSymbol);
+                        symbol = semanticModel.GetDeclaredSymbol(descendant);
+
+                        if (symbol is null)
+                        {
+                            var symbolInfo = semanticModel.GetSymbolInfo(descendant);
+                            symbol = symbolInfo.Symbol ?? symbolInfo.CandidateSymbols.FirstOrDefault();
+                        }
+
+                        symbolCache[descendant] = symbol;
+                    }
+
+                    if (symbol is not null && seenSymbols.Add(symbol))
+                    {
+                        addSymbol(symbol);
+
+                        if (symbol is IMethodSymbol { ReducedFrom: { } reduced } && seenSymbols.Add(reduced))
+                        {
+                            addSymbol(reduced);
+                        }
+                    }
+
+                    var typeInfo = semanticModel.GetTypeInfo(descendant);
+
+                    if (typeInfo.Type is not null && seenSymbols.Add(typeInfo.Type))
+                    {
+                        addSymbol(typeInfo.Type);
+                    }
+
+                    if (typeInfo.ConvertedType is not null
+                        && !SymbolEqualityComparer.Default.Equals(typeInfo.ConvertedType, typeInfo.Type)
+                        && seenSymbols.Add(typeInfo.ConvertedType))
+                    {
+                        addSymbol(typeInfo.ConvertedType);
                     }
                 }
             }
 
             private void ExpandCandidateRelations(ISymbol candidate, Action<ISymbol?> addSymbol)
             {
+                if (candidate is INamedTypeSymbol typeSymbol)
+                {
+                    if (!_typeRelationCache.TryGetValue(typeSymbol, out var relations))
+                    {
+                        relations = (typeSymbol.BaseType, typeSymbol.Interfaces, typeSymbol.TypeArguments);
+                        _typeRelationCache[typeSymbol] = relations;
+                    }
+                    if (relations.BaseType is not null)
+                    {
+                        addSymbol(relations.BaseType);
+                    }
+                    foreach (var iface in relations.Interfaces)
+                    {
+                        addSymbol(iface);
+                    }
+                    foreach (var typeArgument in relations.TypeArguments)
+                    {
+                        addSymbol(typeArgument);
+                    }
+                    return;
+                }
+                // Existing logic for other symbol types
                 switch (candidate)
                 {
                     case IMethodSymbol methodSymbol:
@@ -424,12 +518,10 @@ namespace Selectorlyzer.FlowBuilder
                         {
                             addSymbol(methodSymbol.PartialDefinitionPart);
                         }
-
                         if (methodSymbol.PartialImplementationPart is not null)
                         {
                             addSymbol(methodSymbol.PartialImplementationPart);
                         }
-
                         foreach (var parameter in methodSymbol.Parameters)
                         {
                             addSymbol(parameter.Type);
@@ -446,22 +538,6 @@ namespace Selectorlyzer.FlowBuilder
                     case IFieldSymbol fieldSymbol:
                         addSymbol(fieldSymbol.ContainingType);
                         addSymbol(fieldSymbol.Type);
-                        break;
-                    case INamedTypeSymbol typeSymbol:
-                        if (typeSymbol.BaseType is not null)
-                        {
-                            addSymbol(typeSymbol.BaseType);
-                        }
-
-                        foreach (var iface in typeSymbol.Interfaces)
-                        {
-                            addSymbol(iface);
-                        }
-
-                        foreach (var typeArgument in typeSymbol.TypeArguments)
-                        {
-                            addSymbol(typeArgument);
-                        }
                         break;
                 }
             }
@@ -587,6 +663,7 @@ namespace Selectorlyzer.FlowBuilder
                 _mutableImplementationsByInterface.Clear();
                 _mutableMediatorRequestHandlers.Clear();
                 _mutableMediatorNotificationHandlers.Clear();
+                _typeRelationCache.Clear();
                 _derivedTypesByBase.Clear();
                 _implementationsByInterface.Clear();
                 _mediatorRequestHandlers.Clear();
@@ -775,6 +852,11 @@ namespace Selectorlyzer.FlowBuilder
                 var path = node.SyntaxTree?.FilePath ?? "synthetic";
                 return $"{path}:{node.Span.Start}-{node.Span.End}";
             }
+
+            private static string BuildSymbolId(ISymbol symbol)
+            {
+                return symbol.GetDocumentationCommentId() ?? symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat);
+            }
         }
 
         private sealed class NodeBuilder
@@ -871,18 +953,20 @@ namespace Selectorlyzer.FlowBuilder
                             };
                         }
                     }
-
-                    return;
                 }
-
-                _project ??= projectName;
-                _assembly ??= assemblyName;
-                if (string.IsNullOrEmpty(_name))
+                else
                 {
-                    _name = Id;
+                    _project ??= projectName;
+                    _assembly ??= assemblyName;
+                    if (string.IsNullOrEmpty(_name))
+                    {
+                        _name = Id;
+                    }
+
+                    _fqdn ??= _name;
                 }
 
-                _fqdn ??= _name;
+                ApplyEndpointHeuristics();
             }
 
             public FlowNode ToNode()
@@ -997,6 +1081,130 @@ namespace Selectorlyzer.FlowBuilder
             internal void ClearMatchSnapshots()
             {
                 _matchSnapshots.Clear();
+            }
+
+            private void ApplyEndpointHeuristics()
+            {
+                if (Symbol is INamedTypeSymbol typeSymbol && ShouldTreatAsController(typeSymbol))
+                {
+                    if (string.IsNullOrEmpty(_type) || string.Equals(_type, "class", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _type = "endpoint.controller";
+                    }
+
+                    _tags.Add("controller");
+
+                    var properties = SelectorNodePropertyExtractors.ExtractControllerProperties(typeSymbol);
+                    if (properties is not null)
+                    {
+                        ApplyProperties(properties);
+                    }
+                }
+
+                if (Symbol is IMethodSymbol methodSymbol && ShouldTreatAsControllerAction(methodSymbol))
+                {
+                    if (string.IsNullOrEmpty(_type) || string.Equals(_type, "method", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _type = "endpoint.controller_action";
+                    }
+
+                    _tags.Add("action");
+
+                    var properties = SelectorNodePropertyExtractors.ExtractControllerActionProperties(methodSymbol);
+                    if (properties is not null)
+                    {
+                        ApplyProperties(properties);
+                    }
+                }
+            }
+
+            private static bool ShouldTreatAsController(INamedTypeSymbol typeSymbol)
+            {
+                if (typeSymbol.TypeKind != TypeKind.Class)
+                {
+                    return false;
+                }
+
+                if (HasAttribute(typeSymbol.GetAttributes(), "ApiControllerAttribute"))
+                {
+                    return true;
+                }
+
+                if (typeSymbol.Name.EndsWith("Controller", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                for (var current = typeSymbol.BaseType; current is not null; current = current.BaseType)
+                {
+                    if (string.Equals(current.Name, "ControllerBase", StringComparison.Ordinal) ||
+                        string.Equals(current.Name, "Controller", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private static bool ShouldTreatAsControllerAction(IMethodSymbol methodSymbol)
+            {
+                if (methodSymbol.MethodKind != MethodKind.Ordinary)
+                {
+                    return false;
+                }
+
+                if (methodSymbol.ContainingType is null || !ShouldTreatAsController(methodSymbol.ContainingType))
+                {
+                    return false;
+                }
+
+                if (HasAttribute(methodSymbol.GetAttributes(), "NonActionAttribute"))
+                {
+                    return false;
+                }
+
+                if (HasHttpMethodAttribute(methodSymbol.GetAttributes()))
+                {
+                    return true;
+                }
+
+                return methodSymbol.DeclaredAccessibility == Accessibility.Public
+                    && methodSymbol.ReturnType is not null;
+            }
+
+            private static bool HasAttribute(IEnumerable<AttributeData> attributes, string attributeName)
+            {
+                foreach (var attribute in attributes)
+                {
+                    if (string.Equals(attribute.AttributeClass?.Name, attributeName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private static bool HasHttpMethodAttribute(IEnumerable<AttributeData> attributes)
+            {
+                foreach (var attribute in attributes)
+                {
+                    var name = attribute.AttributeClass?.Name;
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        continue;
+                    }
+
+                    if (name.StartsWith("Http", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, "RouteAttribute", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(name, "AcceptVerbsAttribute", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             internal readonly struct MatchSnapshot

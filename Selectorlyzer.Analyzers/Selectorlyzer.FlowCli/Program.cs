@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Selectorlyzer.FlowBuilder;
@@ -34,6 +35,7 @@ public static class Program
         var flowPatterns = new List<string>();
         int? maxDepth = null;
     int concurrency = -1;
+    string? dumpGraphPath = null;
 
         for (int i = 0; i < argsList.Count; i++)
         {
@@ -74,6 +76,12 @@ public static class Program
                     if (i + 1 < argsList.Count && int.TryParse(argsList[++i], out var parsedConcurrency))
                     {
                         concurrency = parsedConcurrency <= 0 ? -1 : parsedConcurrency;
+                    }
+                    break;
+                case "--dump-graph":
+                    if (i + 1 < argsList.Count)
+                    {
+                        dumpGraphPath = argsList[++i];
                     }
                     break;
             }
@@ -150,6 +158,11 @@ public static class Program
         }
 
         var combined = composition.Build();
+
+        if (!string.IsNullOrWhiteSpace(dumpGraphPath))
+        {
+            DumpGraph(combined, ResolvePath(workspaceRoot, dumpGraphPath!));
+        }
 
         RenderFlows(combined, flowPatterns, maxDepth);
         return 0;
@@ -263,5 +276,53 @@ public static class Program
         }
 
         return Path.GetFullPath(Path.IsPathRooted(candidate) ? candidate : Path.Combine(workspaceRoot, candidate));
+    }
+
+    private static void DumpGraph(FlowGraph graph, string destination)
+    {
+        var nodes = graph.Nodes.Select(node => new
+        {
+            node.Id,
+            node.Type,
+            node.Name,
+            node.Fqdn,
+            node.Assembly,
+            node.Project,
+            Span = node.Span is null ? null : new { node.Span.StartLine, node.Span.EndLine },
+            node.SymbolId,
+            Tags = node.Tags,
+            Properties = node.Properties?.ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value?.ToString(),
+                StringComparer.OrdinalIgnoreCase)
+        }).ToArray();
+
+        var edges = graph.Edges.Select(edge => new
+        {
+            edge.From,
+            edge.To,
+            edge.Kind,
+            edge.Source,
+            edge.Confidence,
+            Evidence = edge.Evidence is null
+                ? null
+                : edge.Evidence.Files.Select(file => new
+                {
+                    file.Path,
+                    file.StartLine,
+                    file.EndLine
+                }).ToArray()
+        }).ToArray();
+
+        var payload = new { nodes, edges };
+        var options = new JsonSerializerOptions
+        {
+            WriteIndented = true
+        };
+
+        var json = JsonSerializer.Serialize(payload, options);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination) ?? Directory.GetCurrentDirectory());
+        File.WriteAllText(destination, json);
+        Console.WriteLine($"[flow] Graph dump written to {destination}");
     }
 }
