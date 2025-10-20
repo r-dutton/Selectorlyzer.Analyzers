@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -43,6 +44,7 @@ public static class Program
         int concurrency = -1;
         string? dumpGraphPath = null;
         string? outputDirectory = null;
+        var outputFormat = FlowOutputFormat.Text;
 
         for (int i = 0; i < argsList.Count; i++)
         {
@@ -95,6 +97,12 @@ public static class Program
                     if (i + 1 < argsList.Count)
                     {
                         outputDirectory = argsList[++i];
+                    }
+                    break;
+                case "--output-format":
+                    if (i + 1 < argsList.Count)
+                    {
+                        outputFormat = ParseOutputFormat(argsList[++i]);
                     }
                     break;
             }
@@ -181,11 +189,11 @@ public static class Program
             ? null
             : ResolvePath(workspaceRoot, outputDirectory);
 
-        RenderFlows(combined, flowPatterns, maxDepth, resolvedOutputDirectory);
+        RenderFlows(combined, flowPatterns, maxDepth, resolvedOutputDirectory, outputFormat);
         return 0;
     }
 
-    private static void RenderFlows(FlowGraph graph, List<string> patterns, int? maxDepth, string? outputDirectory)
+    private static void RenderFlows(FlowGraph graph, List<string> patterns, int? maxDepth, string? outputDirectory, FlowOutputFormat outputFormat)
     {
         var nodesById = graph.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
         var edgesByFrom = graph.Edges
@@ -247,47 +255,75 @@ public static class Program
                 .Select(action => action.Name)
                 .ToArray();
 
-            using var controllerWriter = new StringWriter();
-            controllerWriter.WriteLine(controllerHeading);
-            controllerWriter.WriteLine($"  actions: {string.Join(", ", actionSummaries)}");
-
-            foreach (var action in actionNodes)
+            var sectionText = outputFormat switch
             {
-                controllerWriter.WriteLine();
-                controllerWriter.WriteLine($"action -> {FormatNode(action)}");
-                var visited = new HashSet<string>(StringComparer.Ordinal) { action.Id };
-                if (!edgesByFrom.TryGetValue(action.Id, out var actionEdges))
-                {
-                    continue;
-                }
+                FlowOutputFormat.Text => BuildTextFlow(controllerHeading, actionSummaries, actionNodes, nodesById, edgesByFrom, maxDepth),
+                FlowOutputFormat.Mermaid => BuildMermaidFlow(controllerHeading, controller, actionNodes, nodesById, edgesByFrom, maxDepth),
+                FlowOutputFormat.Dot => BuildDotFlow(controllerHeading, controller, actionNodes, nodesById, edgesByFrom, maxDepth),
+                FlowOutputFormat.PlantUml => BuildPlantUmlFlow(controllerHeading, controller, actionNodes, nodesById, edgesByFrom, maxDepth),
+                _ => throw new InvalidOperationException($"Unsupported output format: {outputFormat}.")
+            };
 
-                foreach (var edge in actionEdges)
-                {
-                    if (nodesById.TryGetValue(edge.To, out var target))
-                    {
-                        RenderNode(nodesById, edgesByFrom, edge, target, 1, maxDepth, visited, controllerWriter);
-                    }
-                }
-            }
-
-            var sectionText = controllerWriter.ToString().TrimEnd();
+            var trimmedSection = sectionText.TrimEnd();
             if (outputDirectory is null)
             {
-                Console.WriteLine(sectionText);
+                Console.WriteLine(trimmedSection);
                 Console.WriteLine();
             }
             else
             {
                 Console.WriteLine($"{controllerHeading} [{string.Join(", ", actionSummaries)}]");
                 var controllerName = controller?.Name ?? controller?.Fqdn ?? group.Key;
-                var fileName = SanitizeFileName(controllerName) + ".flow.txt";
+                var fileExtension = outputFormat switch
+                {
+                    FlowOutputFormat.Text => ".flow.txt",
+                    FlowOutputFormat.Mermaid => ".flow.mmd",
+                    FlowOutputFormat.Dot => ".flow.dot",
+                    FlowOutputFormat.PlantUml => ".flow.puml",
+                    _ => ".flow.txt"
+                };
+                var fileName = SanitizeFileName(controllerName) + fileExtension;
                 var destination = Path.Combine(outputDirectory, fileName);
-                File.WriteAllText(destination, sectionText + Environment.NewLine);
+                File.WriteAllText(destination, trimmedSection + Environment.NewLine);
             }
         }
     }
 
-    private static void RenderNode(
+    private static string BuildTextFlow(
+        string controllerHeading,
+        string[] actionSummaries,
+        List<FlowNode> actionNodes,
+        Dictionary<string, FlowNode> nodesById,
+        Dictionary<string, FlowEdge[]> edgesByFrom,
+        int? maxDepth)
+    {
+        using var controllerWriter = new StringWriter();
+        controllerWriter.WriteLine(controllerHeading);
+        controllerWriter.WriteLine($"  actions: {string.Join(", ", actionSummaries)}");
+
+        foreach (var action in actionNodes)
+        {
+            controllerWriter.WriteLine();
+            controllerWriter.WriteLine($"action -> {FormatNode(action)}");
+            var visited = new HashSet<string>(StringComparer.Ordinal) { action.Id };
+            if (!edgesByFrom.TryGetValue(action.Id, out var actionEdges))
+            {
+                continue;
+            }
+
+            foreach (var edge in actionEdges)
+            {
+                if (nodesById.TryGetValue(edge.To, out var target))
+                {
+                    RenderTextNode(nodesById, edgesByFrom, edge, target, 1, maxDepth, visited, controllerWriter);
+                }
+            }
+        }
+
+        return controllerWriter.ToString();
+    }
+
+    private static void RenderTextNode(
         Dictionary<string, FlowNode> nodesById,
         Dictionary<string, FlowEdge[]> edgesByFrom,
         FlowEdge edge,
@@ -320,10 +356,371 @@ public static class Program
         {
             if (nodesById.TryGetValue(child.To, out var target))
             {
-                RenderNode(nodesById, edgesByFrom, child, target, depth + 1, maxDepth, visited, writer);
+                RenderTextNode(nodesById, edgesByFrom, child, target, depth + 1, maxDepth, visited, writer);
             }
         }
     }
+
+    private static string BuildMermaidFlow(
+        string controllerHeading,
+        FlowNode? controller,
+        List<FlowNode> actionNodes,
+        Dictionary<string, FlowNode> nodesById,
+        Dictionary<string, FlowEdge[]> edgesByFrom,
+        int? maxDepth)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("```mermaid");
+        builder.AppendLine("flowchart TD");
+        builder.AppendLine($"  %% {controllerHeading}");
+
+        var traversal = CollectTraversal(actionNodes, nodesById, edgesByFrom, maxDepth, out var traversalEdges);
+        var idMap = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        if (controller is not null)
+        {
+            var controllerId = GetOrCreateIdentifier(controller.Id);
+            builder.AppendLine($"  {controllerId}[\"{EscapeMermaidLabel(FormatNode(controller))}\"]");
+        }
+
+        foreach (var node in actionNodes)
+        {
+            var nodeId = GetOrCreateIdentifier(node.Id);
+            builder.AppendLine($"  {nodeId}[\"{EscapeMermaidLabel(FormatNode(node))}\"]");
+            if (controller is not null)
+            {
+                var controllerId = GetOrCreateIdentifier(controller.Id);
+                builder.AppendLine($"  {controllerId} -->|action| {nodeId}");
+            }
+        }
+
+        foreach (var node in traversal)
+        {
+            if (actionNodes.Any(a => string.Equals(a.Id, node.Key, StringComparison.Ordinal)) || (controller is not null && string.Equals(node.Key, controller.Id, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            var nodeId = GetOrCreateIdentifier(node.Key);
+            builder.AppendLine($"  {nodeId}[\"{EscapeMermaidLabel(FormatNode(node.Value))}\"]");
+        }
+
+        foreach (var edge in traversalEdges)
+        {
+            var fromId = GetOrCreateIdentifier(edge.FromId);
+            var toId = GetOrCreateIdentifier(edge.ToId);
+            var arrow = edge.Edge.Kind.Equals("remote", StringComparison.OrdinalIgnoreCase) ? "-.->" : "-->";
+            var label = EscapeMermaidLabel(edge.Edge.Kind);
+            builder.AppendLine($"  {fromId} {arrow}|{label}| {toId}");
+            if (edge.DepthLimitReached)
+            {
+                builder.AppendLine($"  %% Max depth reached at {EscapeMermaidLabel(FormatNode(nodesById[edge.ToId]))}");
+            }
+        }
+
+        builder.AppendLine("```");
+        return builder.ToString();
+
+        string GetOrCreateIdentifier(string nodeId)
+        {
+            if (idMap.TryGetValue(nodeId, out var existing))
+            {
+                return existing;
+            }
+
+            var sanitized = SanitizeIdentifier(nodeId);
+            idMap[nodeId] = sanitized;
+            return sanitized;
+        }
+    }
+
+    private static string BuildDotFlow(
+        string controllerHeading,
+        FlowNode? controller,
+        List<FlowNode> actionNodes,
+        Dictionary<string, FlowNode> nodesById,
+        Dictionary<string, FlowEdge[]> edgesByFrom,
+        int? maxDepth)
+    {
+        var builder = new StringBuilder();
+        var graphName = SanitizeIdentifier(controller?.Name ?? controller?.Fqdn ?? "controller");
+        builder.AppendLine($"digraph {graphName} {{");
+        builder.AppendLine("  rankdir=LR;");
+        builder.AppendLine($"  label=\"{EscapeDotLabel(controllerHeading)}\";");
+        builder.AppendLine("  labelloc=top;");
+
+        var traversal = CollectTraversal(actionNodes, nodesById, edgesByFrom, maxDepth, out var traversalEdges);
+        var idMap = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        if (controller is not null)
+        {
+            var controllerId = GetOrCreateIdentifier(controller.Id);
+            builder.AppendLine($"  {controllerId} [shape=box, label=\"{EscapeDotLabel(FormatNode(controller))}\"];");
+        }
+
+        foreach (var node in actionNodes)
+        {
+            var nodeId = GetOrCreateIdentifier(node.Id);
+            builder.AppendLine($"  {nodeId} [shape=oval, label=\"{EscapeDotLabel(FormatNode(node))}\"];");
+            if (controller is not null)
+            {
+                var controllerId = GetOrCreateIdentifier(controller.Id);
+                builder.AppendLine($"  {controllerId} -> {nodeId} [label=\"action\"];");
+            }
+        }
+
+        foreach (var node in traversal)
+        {
+            if (actionNodes.Any(a => string.Equals(a.Id, node.Key, StringComparison.Ordinal)) || (controller is not null && string.Equals(node.Key, controller.Id, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            var nodeId = GetOrCreateIdentifier(node.Key);
+            builder.AppendLine($"  {nodeId} [label=\"{EscapeDotLabel(FormatNode(node.Value))}\"];");
+        }
+
+        foreach (var edge in traversalEdges)
+        {
+            var fromId = GetOrCreateIdentifier(edge.FromId);
+            var toId = GetOrCreateIdentifier(edge.ToId);
+            var attributes = new List<string> { $"label=\"{EscapeDotLabel(edge.Edge.Kind)}\"" };
+            if (edge.Edge.Kind.Equals("remote", StringComparison.OrdinalIgnoreCase))
+            {
+                attributes.Add("style=dashed");
+            }
+
+            builder.AppendLine($"  {fromId} -> {toId} [{string.Join(", ", attributes)}];");
+            if (edge.DepthLimitReached)
+            {
+                builder.AppendLine($"  // Max depth reached at {EscapeDotLabel(FormatNode(nodesById[edge.ToId]))}");
+            }
+        }
+
+        builder.AppendLine("}");
+        return builder.ToString();
+
+        string GetOrCreateIdentifier(string nodeId)
+        {
+            if (idMap.TryGetValue(nodeId, out var existing))
+            {
+                return existing;
+            }
+
+            var sanitized = SanitizeIdentifier(nodeId);
+            idMap[nodeId] = sanitized;
+            return sanitized;
+        }
+    }
+
+    private static string BuildPlantUmlFlow(
+        string controllerHeading,
+        FlowNode? controller,
+        List<FlowNode> actionNodes,
+        Dictionary<string, FlowNode> nodesById,
+        Dictionary<string, FlowEdge[]> edgesByFrom,
+        int? maxDepth)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("@startuml");
+        builder.AppendLine($"title {EscapePlantUmlLabel(controllerHeading)}");
+
+        var traversal = CollectTraversal(actionNodes, nodesById, edgesByFrom, maxDepth, out var traversalEdges);
+        var idMap = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        if (controller is not null)
+        {
+            var controllerId = GetOrCreateIdentifier(controller.Id);
+            builder.AppendLine($"component \"{EscapePlantUmlLabel(FormatNode(controller))}\" as {controllerId}");
+        }
+
+        foreach (var node in actionNodes)
+        {
+            var nodeId = GetOrCreateIdentifier(node.Id);
+            builder.AppendLine($"node \"{EscapePlantUmlLabel(FormatNode(node))}\" as {nodeId}");
+            if (controller is not null)
+            {
+                var controllerId = GetOrCreateIdentifier(controller.Id);
+                builder.AppendLine($"{controllerId} --> {nodeId} : action");
+            }
+        }
+
+        foreach (var node in traversal)
+        {
+            if (actionNodes.Any(a => string.Equals(a.Id, node.Key, StringComparison.Ordinal)) || (controller is not null && string.Equals(node.Key, controller.Id, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            var nodeId = GetOrCreateIdentifier(node.Key);
+            builder.AppendLine($"node \"{EscapePlantUmlLabel(FormatNode(node.Value))}\" as {nodeId}");
+        }
+
+        foreach (var edge in traversalEdges)
+        {
+            var fromId = GetOrCreateIdentifier(edge.FromId);
+            var toId = GetOrCreateIdentifier(edge.ToId);
+            var arrow = edge.Edge.Kind.Equals("remote", StringComparison.OrdinalIgnoreCase) ? "-.->" : "-->";
+            builder.AppendLine($"{fromId} {arrow} {toId} : {EscapePlantUmlLabel(edge.Edge.Kind)}");
+            if (edge.DepthLimitReached)
+            {
+                builder.AppendLine($"' Max depth reached at {EscapePlantUmlLabel(FormatNode(nodesById[edge.ToId]))}");
+            }
+        }
+
+        builder.AppendLine("@enduml");
+        return builder.ToString();
+
+        string GetOrCreateIdentifier(string nodeId)
+        {
+            if (idMap.TryGetValue(nodeId, out var existing))
+            {
+                return existing;
+            }
+
+            var sanitized = SanitizeIdentifier(nodeId);
+            idMap[nodeId] = sanitized;
+            return sanitized;
+        }
+    }
+
+    private static Dictionary<string, FlowNode> CollectTraversal(
+        List<FlowNode> actionNodes,
+        Dictionary<string, FlowNode> nodesById,
+        Dictionary<string, FlowEdge[]> edgesByFrom,
+        int? maxDepth,
+        out List<TraversalEdge> edges)
+    {
+        var nodes = new Dictionary<string, FlowNode>(StringComparer.Ordinal);
+        var edgeMap = new Dictionary<string, TraversalEdge>(StringComparer.Ordinal);
+
+        foreach (var action in actionNodes)
+        {
+            nodes[action.Id] = action;
+            var visited = new HashSet<string>(StringComparer.Ordinal) { action.Id };
+            if (!edgesByFrom.TryGetValue(action.Id, out var actionEdges))
+            {
+                continue;
+            }
+
+            foreach (var edge in actionEdges)
+            {
+                Traverse(action.Id, edge, 1, visited);
+            }
+        }
+
+        edges = edgeMap.Values.ToList();
+        return nodes;
+
+        void Traverse(string fromId, FlowEdge edge, int depth, HashSet<string> visited)
+        {
+            if (!nodesById.TryGetValue(edge.To, out var target))
+            {
+                return;
+            }
+
+            nodes[target.Id] = target;
+            var depthLimit = maxDepth.HasValue && depth >= maxDepth.Value;
+            var key = $"{fromId}|{target.Id}|{edge.Kind}";
+            if (edgeMap.TryGetValue(key, out var existing))
+            {
+                if (!existing.DepthLimitReached && depthLimit)
+                {
+                    edgeMap[key] = existing with { DepthLimitReached = true };
+                }
+            }
+            else
+            {
+                edgeMap[key] = new TraversalEdge(fromId, target.Id, edge, depth, depthLimit);
+            }
+
+            if (depthLimit)
+            {
+                return;
+            }
+
+            if (!visited.Add(target.Id))
+            {
+                return;
+            }
+
+            if (!edgesByFrom.TryGetValue(target.Id, out var childEdges))
+            {
+                return;
+            }
+
+            foreach (var child in childEdges)
+            {
+                Traverse(target.Id, child, depth + 1, visited);
+            }
+        }
+    }
+
+    private static FlowOutputFormat ParseOutputFormat(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return FlowOutputFormat.Text;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "text" => FlowOutputFormat.Text,
+            "mermaid" => FlowOutputFormat.Mermaid,
+            "dot" => FlowOutputFormat.Dot,
+            "plantuml" => FlowOutputFormat.PlantUml,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported output format. Expected text, mermaid, dot, or plantuml.")
+        };
+    }
+
+    private static string EscapeMermaidLabel(string label)
+    {
+        return label.Replace("\"", "'");
+    }
+
+    private static string EscapeDotLabel(string label)
+    {
+        return label.Replace("\"", "\\\"");
+    }
+
+    private static string EscapePlantUmlLabel(string label)
+    {
+        return label.Replace("\"", "'");
+    }
+
+    private static string SanitizeIdentifier(string candidate)
+    {
+        if (string.IsNullOrEmpty(candidate))
+        {
+            return "n";
+        }
+
+        var builder = new StringBuilder(candidate.Length + 1);
+        builder.Append('n');
+        foreach (var ch in candidate)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(ch);
+            }
+            else
+            {
+                builder.Append('_');
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private enum FlowOutputFormat
+    {
+        Text,
+        Mermaid,
+        Dot,
+        PlantUml
+    }
+
+    private sealed record TraversalEdge(string FromId, string ToId, FlowEdge Edge, int Depth, bool DepthLimitReached);
 
     private static bool MatchesPatterns(FlowNode action, FlowNode? controller, List<string> patterns)
     {
@@ -400,7 +797,8 @@ public static class Program
         Console.WriteLine("  --max-depth <number>     Limit traversal depth when rendering flows.");
         Console.WriteLine("  --concurrency <number>   Maximum number of compilations to analyze in parallel.");
         Console.WriteLine("  --dump-graph <path>      Write the composed graph to disk as JSON.");
-        Console.WriteLine("  --output-dir <path>      Write each controller flow to <ControllerName>.flow.txt while printing a summary to stdout.");
+        Console.WriteLine("  --output-dir <path>      Write each controller flow to <ControllerName>.flow.<ext> while printing a summary to stdout.");
+        Console.WriteLine("  --output-format <name>   Choose the renderer: text (default), mermaid, dot, or plantuml.");
         Console.WriteLine("  --help, -h               Display this help message.");
     }
 
